@@ -19,6 +19,11 @@ DB_PATH = _path("MEMORYVAULT_DB_PATH", str(LIBRARY_ROOT / "photos.db"))
 # LUKS vault
 VAULT_IMG = _path("MEMORYVAULT_VAULT_IMG", str(LIBRARY_ROOT / "vault.img"))
 VAULT_MOUNT = _path("MEMORYVAULT_VAULT_MOUNT", "/mnt/vault")
+# "luks" (default): flagged content lives in an encrypted LUKS image that
+# a human unlocks. "dir": VAULT_MOUNT is a plain directory treated as
+# always-available — for containers/NAS where the HOST disk is already
+# encrypted. Never use "dir" on an unencrypted volume.
+VAULT_MODE = os.environ.get("MEMORYVAULT_VAULT_MODE", "luks")
 
 # Inference (RecRoomRig GPU host)
 OLLAMA_URL = os.environ.get(
