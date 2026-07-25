@@ -31,7 +31,40 @@ on tablets and phones.
 - **The Brain** — a stdlib-only web server: constellation, gallery, people,
   memories slideshow, curation, live pipeline progress
 
-## Quick start
+## Quick start (Docker — recommended)
+
+The whole system in one command. You need [Docker](https://docs.docker.com/get-docker/)
+with Compose.
+
+```bash
+git clone https://github.com/familyosdev-sys/memory-vault.git
+cd memory-vault
+cp .env.example .env                 # optional: edit paths/port
+docker compose up -d                 # starts Ollama + the Brain
+docker compose exec ollama ollama pull qwen2.5vl:7b   # one-time model download (~6 GB)
+
+# point it at your photos (default: the ./photos folder) and run a pass:
+docker compose run --rm memoryvault pipeline
+
+# open the app:
+#   http://localhost:8484
+```
+
+Re-run `docker compose run --rm memoryvault pipeline` whenever you add photos —
+it only processes what's new. The web UI stays up the whole time.
+
+**GPU (optional, much faster tagging):** uncomment the `deploy:` block under
+`ollama` in `docker-compose.yml` (needs the NVIDIA Container Toolkit). Without
+a GPU, tagging runs on CPU — correct, just slow; leave the pipeline running
+overnight for a large library.
+
+**A note on the vault:** flagged/explicit photos are routed out of the main
+library into a separate "vault" volume. In Docker this is a plain Docker
+volume, so **keep your Docker host on an encrypted disk**. For true at-rest
+encryption, run the vault as a LUKS container on the host instead
+(`MEMORYVAULT_VAULT_MODE=luks`) — see `deploy/vault-ceremony.sh`.
+
+## Quick start (bare metal / Python)
 
 ```bash
 cd scripts
@@ -53,7 +86,7 @@ Edit `schema/tag-schema.json` to put your own family's names in the people
 dimension (they're placeholders); face recognition learns the real faces when
 you label clusters on the `/people` page.
 
-`nightly-pipeline.sh`, the systemd units, and `vault-ceremony.sh` are working
+`deploy/nightly-pipeline.sh`, `deploy/systemd/`, and `deploy/vault-ceremony.sh` are working
 examples from a real deployment — adjust paths/hosts to your setup.
 
 ## Design principles

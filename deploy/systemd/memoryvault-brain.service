@@ -6,7 +6,7 @@ After=network.target mnt-data.mount
 User=@USER@
 Environment=MEMORYVAULT_LIBRARY_ROOT=@LIBRARY@
 Environment=MEMORYVAULT_NSFW_MODEL_PATH=@NSFW@
-ExecStart=/opt/memoryvault/venv/bin/python @REPO@/MemoryVault/.scripts/mvault brain --port 8484
+ExecStart=/opt/memoryvault/venv/bin/python @REPO@/scripts/mvault brain --port 8484
 Restart=on-failure
 
 [Install]

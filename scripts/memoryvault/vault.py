@@ -22,11 +22,20 @@ class VaultUnavailable(Exception):
 
 
 def is_mounted() -> bool:
+    if config.VAULT_MODE == "dir":
+        # a bind-mounted host directory is the vault; ensure it exists
+        config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
+        for sub in ("", "review", "partner", "other"):
+            (config.VAULT_MOUNT / sub).mkdir(exist_ok=True)
+        return os.access(config.VAULT_MOUNT, os.W_OK)
     return os.path.ismount(config.VAULT_MOUNT)
 
 
 def open_vault():
     """Interactive: cryptsetup prompts for the passphrase on the terminal."""
+    if config.VAULT_MODE == "dir":
+        is_mounted()  # just ensures the directory + subdirs exist
+        return
     config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["sudo", "cryptsetup", "open", str(config.VAULT_IMG), MAPPER_NAME],

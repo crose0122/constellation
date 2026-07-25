@@ -8,7 +8,7 @@ set -uo pipefail
 export MEMORYVAULT_LIBRARY_ROOT=~/Constellation/library
 export MEMORYVAULT_NSFW_MODEL_PATH=/opt/memoryvault/nsfw-model
 export MEMORYVAULT_ROOT="$HOME/vault-view"
-MV="/opt/memoryvault/venv/bin/python $HOME/constellation/MemoryVault/.scripts/mvault"
+MV="/opt/memoryvault/venv/bin/python $HOME/constellation/scripts/mvault"
 
 echo "=== nightly $(date -Is) ==="
 $MV discover /srv/photo-sources/Photos --kind local
