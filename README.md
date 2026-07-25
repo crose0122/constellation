@@ -1,14 +1,13 @@
-# Memory Vault
+# Constellation
 
-A self-hosted, privacy-first family photo system. Everything runs on your own
-hardware on your own LAN — no cloud, no accounts, no telemetry, and nothing
-ever leaves your network.
+**Constellation** is a self-hosted, privacy-first family photo system — your library rendered as a living 3D star map of the people, places, and moments in your life. It runs entirely on your own hardware on your own LAN: no cloud, no accounts, no telemetry, nothing ever leaves your network.
 
-**Constellation** is the heart of it: your library rendered as a living 3D
-star map of categories — people, places, occasions, emotions — each star
-wearing a rotating photo, with slideshows that walk the connections between
-memories ("same day", "same people"). It installs as a full-screen app (PWA)
-on tablets and phones.
+*Memory Vault* is the engine underneath — the ingest → screen → tag → faces → geocode pipeline and the local web server that Constellation is the face of.
+
+The star map has a star for every category — people, places, occasions,
+emotions — each wearing a rotating photo, with slideshows that walk the
+connections between memories ("same day", "same people"). It installs as a
+full-screen app (PWA) on tablets and phones.
 
 ## What it does
 
