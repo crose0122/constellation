@@ -1,0 +1,12 @@
+[Unit]
+Description=Memory Vault - nightly SQLite snapshot (replication-safe backup)
+
+[Service]
+Type=oneshot
+User=@USER@
+# a live WAL-mode SQLite file must never be file-synced; .backup produces a
+# consistent snapshot that Syncthing/rsync can replicate safely (SPEC.md §10)
+ExecStart=/bin/bash -c '\
+  sqlite3 @LIBRARY@/photos.db ".backup @LIBRARY@/snapshots/photos-$(date +%%u).db" && \
+  echo "db snapshot written"'
+ExecStartPre=/bin/mkdir -p @LIBRARY@/snapshots

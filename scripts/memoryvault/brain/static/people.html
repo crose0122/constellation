@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Vault — People</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #010409; color: #dfeefa;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; padding: 1rem;
+    max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.05rem; }
+  .sub { color: #5f7d95; font-size: 0.78rem; margin: 0.25rem 0 1rem; }
+  .grid { display: grid; gap: 0.7rem;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .card { background: #0a1420; border: 1px solid #1c3e60; border-radius: 12px;
+    overflow: hidden; }
+  .face { width: 100%; aspect-ratio: 1; background: #06101c center/cover no-repeat; }
+  .meta { padding: 0.45rem 0.55rem; }
+  .meta .n { color: #5f7d95; font-size: 0.7rem; }
+  .meta input {
+    width: 100%; margin-top: 0.3rem; background: #06101c; color: #dfeefa;
+    border: 1px solid #1c3e60; border-radius: 8px; padding: 0.4rem 0.5rem;
+    font-size: 0.8rem; outline: none;
+  }
+  .meta input:focus { border-color: #49c6ff; }
+  .meta input.saved { border-color: #5ec98f; }
+  a { color: #8fd4ff; }
+</style>
+</head>
+<body>
+<h1>👥 People — name a face once, find them forever</h1>
+<p class="sub"><b>Each card is ONE person's face</b> (cropped from whatever photo it
+appeared in). Name only the person shown — one name per card, even if the original
+photo had the whole family in it. Every photo of them becomes searchable in the
+<a href="/gallery">gallery</a>. Leave strangers unnamed.</p>
+<div class="grid" id="grid"></div>
+<script>
+async function load() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "<p>loading faces…</p>";
+  let d = null;
+  // the pipeline can hold the DB briefly — retry instead of a blank page
+  for (let tries = 0; tries < 5 && !d; tries++) {
+    try {
+      const res = await fetch("/api/people");
+      if (res.ok) d = await res.json();
+    } catch (e) { /* transient */ }
+    if (!d) await new Promise((r) => setTimeout(r, 2000));
+  }
+  if (!d) {
+    grid.innerHTML = "<p>server busy — pull to refresh in a moment.</p>";
+    return;
+  }
+  grid.innerHTML = "";
+  if (!d.clusters.length) {
+    grid.innerHTML = "<p>No face clusters yet — the scan may still be running.</p>";
+    return;
+  }
+  for (const c of d.clusters) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const face = document.createElement("div");
+    face.className = "face";
+    if (c.face) {
+      face.style.backgroundImage = `url(${c.face})`;
+      face.style.backgroundSize = "cover";
+    }
+    if (c.label) {
+      face.style.cursor = "pointer";
+      face.title = `review ${c.label}'s faces`;
+      face.addEventListener("click", () =>
+        location.href = `/person?label=${encodeURIComponent(c.label)}`);
+    }
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<div class="n">${c.count} photos</div>`;
+    const inp = document.createElement("input");
+    inp.placeholder = "name…";
+    inp.value = c.label || "";
+    if (c.label) inp.classList.add("saved");
+    let lastSaved = c.label || "";
+    async function save() {
+      const val = inp.value.trim();
+      if (val === lastSaved) return;
+      inp.classList.remove("saved");
+      inp.style.borderColor = "#e8b64c";           // amber: saving
+      try {
+        const r = await fetch(
+          `/api/people/label?cluster=${c.id}&label=${encodeURIComponent(val)}`);
+        if (r.ok) {
+          lastSaved = val;
+          inp.style.borderColor = "";
+          if (val) inp.classList.add("saved");     // green: stored
+        } else {
+          inp.style.borderColor = "#ff8478";       // red: retry
+        }
+      } catch (e) {
+        inp.style.borderColor = "#ff8478";
+      }
+    }
+    // mobile keyboards often skip Enter entirely — save on blur too
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
+    });
+    inp.addEventListener("blur", save);
+    meta.appendChild(inp);
+    if (c.label) {
+      const rm = document.createElement("button");
+      rm.textContent = "Remove their photos…";
+      rm.style.cssText = "margin-top:0.4rem;padding:0.4rem 0.6rem;border:0;" +
+        "border-radius:8px;background:#450a0a;color:#fecaca;cursor:pointer;" +
+        "font-size:0.7rem;width:100%";
+      rm.addEventListener("click", async () => {
+        const label = encodeURIComponent(c.label);
+        const [solo, all] = await Promise.all([
+          fetch(`/api/people/removeall?label=${label}&mode=solo&dry=1`).then(r => r.json()),
+          fetch(`/api/people/removeall?label=${label}&mode=all&dry=1`).then(r => r.json()),
+        ]);
+        const soloOnly = confirm(
+          `Remove ${c.label}'s photos to the restorable Removed bin?\n\n` +
+          `OK = only photos of ${c.label} ALONE (${solo.count} photos — ` +
+          `group shots with others stay)\n` +
+          `Cancel = choose "every photo" next`);
+        let mode = null;
+        if (soloOnly) mode = "solo";
+        else if (confirm(
+          `Remove EVERY photo ${c.label} appears in (${all.count} photos — ` +
+          `includes group shots with other people)?`)) mode = "all";
+        if (!mode) return;
+        const r = await fetch(`/api/people/removeall?label=${label}&mode=${mode}`);
+        if (r.ok) {
+          const d = await r.json();
+          rm.textContent = `${d.removed} photos moved to Removed bin ✓`;
+          rm.disabled = true;
+        } else alert("Removal failed — nothing was changed.");
+      });
+      meta.appendChild(rm);
+    }
+    card.appendChild(face);
+    card.appendChild(meta);
+    grid.appendChild(card);
+  }
+}
+load();
+</script>
+</body>
+</html>

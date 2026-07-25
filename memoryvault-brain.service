@@ -1,0 +1,13 @@
+[Unit]
+Description=Memory Vault - The Brain (LAN web UI)
+After=network.target mnt-data.mount
+
+[Service]
+User=@USER@
+Environment=MEMORYVAULT_LIBRARY_ROOT=@LIBRARY@
+Environment=MEMORYVAULT_NSFW_MODEL_PATH=@NSFW@
+ExecStart=/opt/memoryvault/venv/bin/python @REPO@/MemoryVault/.scripts/mvault brain --port 8484
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

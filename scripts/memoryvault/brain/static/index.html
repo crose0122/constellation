@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Constellation — our life in images</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#010409">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/brain.css">
+<script>
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+</script>
+</head>
+<body>
+<canvas id="brain"></canvas>
+
+<header id="topbar">
+  <span class="title">🌌 Constellation</span>
+  <span class="hint" id="hint">our life in images — tap a star to explore</span>
+  <button id="backBtn">← categories</button>
+  <a id="galleryLink" href="/gallery">gallery</a>
+  <button id="memBtn">memories</button>
+  <button id="modeBtn">ambient</button>
+</header>
+
+<div id="memories" class="hidden">
+  <img id="memA" alt="">
+  <img id="memB" alt="">
+  <button id="memRemove" title="remove from display (restorable)">🗑</button>
+  <div id="memCaption">
+    <div id="memWhy"></div>
+    <div id="memDate"></div>
+    <div id="memTags"></div>
+  </div>
+</div>
+
+<aside id="catPanel" class="hidden">
+  <div id="catTitle"></div>
+  <div id="catMeta"></div>
+  <div id="catConn"></div>
+  <div id="catGrid"></div>
+  <button id="catMore" style="display:none"></button>
+</aside>
+
+<div id="lightbox" class="hidden">
+  <button id="lbClose">✕</button>
+  <button id="lbRemove" title="remove from display (restorable)">🗑</button>
+  <img id="lbImg" alt="">
+  <div id="lbMeta">
+    <div id="lbDate"></div>
+    <div id="lbTags"></div>
+  </div>
+</div>
+
+<aside id="panel" class="hidden">
+  <img id="panelImg" alt="">
+  <div id="panelDate"></div>
+  <div id="panelTags"></div>
+  <div id="panelWhy"></div>
+</aside>
+
+<footer id="legend">
+  <span><i style="background:#e8b64c"></i>same person</span>
+  <span><i style="background:#5aa2e0"></i>same place</span>
+  <span><i style="background:#8f6ae0"></i>visually similar</span>
+  <span><i style="background:#5ec98f"></i>same day</span>
+  <span><i style="background:#8a8a99"></i>near in time</span>
+</footer>
+
+<script src="/static/brain.js"></script>
+</body>
+</html>
