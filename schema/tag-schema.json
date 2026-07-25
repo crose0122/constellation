@@ -1,0 +1,237 @@
+{
+  "version": "2.0",
+  "_notes": [
+    "v2.0 accuracy pass: the vision model no longer names people (trained face",
+    "recognition is authoritative \u2014 vision cannot know what any one person looks like) and",
+    "no longer guesses the year (EXIF is authoritative). family members are PEOPLE, never a",
+    "pet \u2014 he must never appear in the pets dimension. Dimensions with",
+    "\"vision\": false are kept for DB/UI compatibility but are excluded from the",
+    "vision prompt and ignored if the model returns them. Values are enforced by",
+    "enum-constrained structured output (tag.py build_format)."
+  ],
+  "dimensions": {
+    "people": {
+      "label": "People",
+      "type": "multi",
+      "vision": false,
+      "values": [
+        "Alex",
+        "Bailey",
+        "Casey",
+        "Dana",
+        "Mom",
+        "Dad",
+        "Grandma",
+        "Grandpa",
+        "Unknown",
+        "None"
+      ],
+      "prompt": "(not asked of the vision model \u2014 people tags come from trained face recognition, model_version faces-1.0. Replace the example names with your family's.)"
+    },
+    "occasion": {
+      "label": "Occasion",
+      "type": "single",
+      "values": [
+        "Graduation",
+        "Birthday",
+        "Holiday",
+        "Vacation",
+        "Everyday",
+        "School Event",
+        "Sports Event",
+        "Party",
+        "Ceremony",
+        "Other"
+      ],
+      "prompt": "The occasion. Choose a specific occasion ONLY if there is clear visual evidence (cap and gown, birthday cake, decorations, uniforms, luggage/landmarks). Otherwise choose Everyday."
+    },
+    "emotion": {
+      "label": "Emotion",
+      "type": "multi",
+      "max": 3,
+      "values": [
+        "Joyful",
+        "Tender",
+        "Funny",
+        "Proud",
+        "Chaotic",
+        "Peaceful",
+        "Sad",
+        "Surprised",
+        "Loving",
+        "Neutral"
+      ],
+      "prompt": "Emotions clearly visible in faces or body language \u2014 at most 3. If expressions are unclear or faces are not visible, use Neutral only."
+    },
+    "attire": {
+      "label": "Attire",
+      "type": "multi",
+      "max": 3,
+      "values": [
+        "Formal",
+        "Casual",
+        "Costume",
+        "Pajamas",
+        "Swimwear",
+        "Sports Uniform",
+        "Business",
+        "Seasonal",
+        "Cap and Gown"
+      ],
+      "prompt": "What people are wearing. Use Casual unless clothing is clearly distinctive."
+    },
+    "location": {
+      "label": "Location",
+      "type": "single",
+      "values": [
+        "Home",
+        "Backyard",
+        "Beach",
+        "Park",
+        "School",
+        "Restaurant",
+        "Church",
+        "Car",
+        "Pool",
+        "Sports Field",
+        "Indoor",
+        "Outdoor",
+        "Unknown"
+      ],
+      "prompt": "Where this was taken. Prefer a specific setting; use Indoor or Outdoor only when nothing more specific clearly fits; use Unknown if you cannot tell."
+    },
+    "activity": {
+      "label": "Activity",
+      "type": "multi",
+      "max": 2,
+      "values": [
+        "Sports",
+        "Cooking",
+        "Gaming",
+        "Swimming",
+        "Hiking",
+        "Reading",
+        "Eating",
+        "Playing",
+        "Working",
+        "Traveling",
+        "Posing",
+        "None"
+      ],
+      "prompt": "The main activity actually happening in the frame \u2014 at most 2. Posing means visible people arranged themselves for the camera; never Posing if no people are visible. None if no activity is identifiable."
+    },
+    "time_of_day": {
+      "label": "Time of Day",
+      "type": "single",
+      "values": [
+        "Morning",
+        "Golden Hour",
+        "Midday",
+        "Evening",
+        "Night",
+        "Indoor Artificial",
+        "Unknown"
+      ],
+      "prompt": "Time of day judged from the light. Indoor Artificial for indoor shots under artificial light. Unknown if you cannot tell."
+    },
+    "milestone": {
+      "label": "Milestone",
+      "type": "multi",
+      "max": 2,
+      "values": [
+        "First Day",
+        "Lost Tooth",
+        "Drivers License",
+        "Prom",
+        "Graduation",
+        "Wedding",
+        "New Home",
+        "New Pet",
+        "Birthday",
+        "None"
+      ],
+      "prompt": "A life milestone ONLY with unmistakable visual evidence (cap and gown, missing-tooth smile, wedding attire, cake with candles). When in doubt, None."
+    },
+    "season_holiday": {
+      "label": "Season / Holiday",
+      "type": "multi",
+      "max": 2,
+      "values": [
+        "Christmas",
+        "Halloween",
+        "Easter",
+        "Thanksgiving",
+        "Summer",
+        "Winter",
+        "4th of July",
+        "None"
+      ],
+      "prompt": "Season or holiday ONLY with visible evidence (tree/lights, costumes, snow, fireworks, decorations). When in doubt, None."
+    },
+    "group_size": {
+      "label": "Group Size",
+      "type": "single",
+      "values": [
+        "No People",
+        "Solo",
+        "Duo",
+        "Small Group (3-5)",
+        "Family (6+)",
+        "Crowd"
+      ],
+      "prompt": "Count the people actually visible. No People if none. Crowd only for large gatherings where individuals blur together."
+    },
+    "quality": {
+      "label": "Quality",
+      "type": "single",
+      "values": [
+        "Keeper",
+        "Good",
+        "Blurry",
+        "Poorly Lit",
+        "Damaged or Faded"
+      ],
+      "prompt": "Technical quality only. Keeper = sharp, well-composed, frame-worthy. Good = clear and usable. Blurry = motion blur or out of focus. Poorly Lit = too dark/overexposed. Damaged or Faded = scan artifacts, tears, heavy fading."
+    },
+    "pets": {
+      "label": "Pets",
+      "type": "multi",
+      "max": 2,
+      "values": [
+        "With Rex",
+        "With Other Pet",
+        "No Pets"
+      ],
+      "prompt": "Pet ANIMALS visible in the photo. Rex is the family dog. With Other Pet for any other animal. No Pets if no animal is visible. Never use this field for people."
+    },
+    "humor": {
+      "label": "Humor",
+      "type": "single",
+      "values": [
+        "Genuinely Funny",
+        "Awkward Family Photo",
+        "Intentional Silly",
+        "Not Funny"
+      ],
+      "prompt": "Is the photo itself funny? Intentional Silly = subjects deliberately goofing. Default to Not Funny."
+    },
+    "sentiment": {
+      "label": "Sentiment",
+      "type": "single",
+      "values": [
+        "Core Memory",
+        "Important",
+        "Nice to Have",
+        "Why Do We Still Have This"
+      ],
+      "prompt": "Sentimental weight as a family memory. Core Memory = an irreplaceable moment between family members \u2014 people must be visible; never Core Memory for photos of objects or scenery. Why Do We Still Have This = clearly discardable (random objects, accidental shots)."
+    },
+    "year": {
+      "label": "Year",
+      "type": "single",
+      "vision": false,
+      "values": [],
+      "prompt": "(not asked of the vision model \u2014 the year comes from EXIF taken_at)"
+    }
+  }
+}

@@ -1,0 +1,194 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 40%, #061020 0%, #010409 72%);
+  color: #cfe4f2;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#brain { position: fixed; inset: 0; cursor: pointer; touch-action: none; }
+
+#topbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; gap: 1rem;
+  padding: 0.7rem 1rem;
+  background: linear-gradient(#0a0c14dd, transparent);
+  pointer-events: none;
+}
+#topbar .title { font-size: 1.1rem; font-weight: 600; letter-spacing: 0.04em; }
+#topbar .hint { font-size: 0.8rem; opacity: 0.55; flex: 1; }
+#modeBtn {
+  pointer-events: auto;
+  background: #1c2030; color: #cfd2e0; border: 1px solid #333a55;
+  border-radius: 999px; padding: 0.35rem 1rem; font-size: 0.8rem; cursor: pointer;
+}
+#modeBtn:hover { background: #262c42; }
+#backBtn {
+  pointer-events: auto; display: none;
+  background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+  border-radius: 999px; padding: 0.35rem 1rem; font-size: 0.8rem; cursor: pointer;
+}
+body.photoview #backBtn { display: inline-block; }
+
+#catPanel {
+  position: fixed; top: 3.4rem; right: 0.8rem; width: min(340px, 88vw);
+  max-height: calc(100vh - 8rem); overflow-y: auto;
+  background: #061424ee; border: 1px solid #1c3e60; border-radius: 14px;
+  padding: 0.9rem; backdrop-filter: blur(6px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+#catPanel.hidden { opacity: 0; transform: translateX(20px); pointer-events: none; }
+#catTitle { font-size: 1.05rem; font-weight: 600; color: #d8f1ff; }
+#catMeta { margin: 0.15rem 0 0.7rem; font-size: 0.76rem; opacity: 0.65; }
+#catConn { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.7rem; }
+#catConn b {
+  font-weight: 500; font-size: 0.7rem; background: #06101c;
+  border: 1px solid #23507a; color: #bfe4ff; cursor: pointer;
+  padding: 0.18rem 0.55rem; border-radius: 999px;
+}
+#catConn b:hover { background: #10243a; }
+#catGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; }
+#catMore {
+  width: 100%; margin-top: 0.6rem; padding: 0.55rem;
+  background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+  border-radius: 10px; cursor: pointer; font-size: 0.78rem;
+}
+#catGrid img {
+  width: 100%; aspect-ratio: 1; object-fit: cover;
+  border-radius: 8px; cursor: pointer; border: 1px solid #1c3e60;
+}
+#catGrid img:hover { border-color: #49c6ff; }
+body.ambient #catPanel { display: none; }
+
+#panel {
+  position: fixed; top: 3.4rem; right: 0.8rem; width: min(300px, 80vw);
+  background: #12151fee; border: 1px solid #2a3050; border-radius: 14px;
+  padding: 0.8rem; backdrop-filter: blur(6px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+#panel.hidden { opacity: 0; transform: translateX(20px); pointer-events: none; }
+#panelImg { width: 100%; border-radius: 10px; display: block; }
+#panelDate { margin-top: 0.5rem; font-size: 0.85rem; opacity: 0.7; }
+#panelTags { margin-top: 0.4rem; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+#panelTags b {
+  font-weight: 500; font-size: 0.72rem; background: #232946;
+  padding: 0.15rem 0.55rem; border-radius: 999px;
+}
+#panelWhy { margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.65; line-height: 1.5; }
+
+/* Memories — full-screen slideshow that walks the memory graph */
+#memories {
+  position: fixed; inset: 0; z-index: 40; background: #010409;
+  overflow: hidden;
+}
+#memories.hidden { display: none; }
+#memories img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; opacity: 0;
+  transition: opacity 1.6s ease;
+  transform-origin: center;
+}
+#memories img.showing {
+  opacity: 1;
+  animation: kenburns 22s ease-in-out infinite alternate;
+}
+@keyframes kenburns {
+  from { transform: scale(1); }
+  to   { transform: scale(1.07) translate(1.2%, -1%); }
+}
+#memCaption {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 1.4rem 1.6rem 1.2rem;
+  background: linear-gradient(transparent, #010409e6);
+  text-align: center;
+}
+/* type scales with the screen: readable on a phone, a tablet on a shelf,
+   or a TV across the room */
+#memWhy {
+  font-size: clamp(0.8rem, 1.4vw, 1.5rem);
+  color: #8fd4ff; opacity: 0.85; letter-spacing: 0.05em;
+  min-height: 1.1em;
+}
+#memDate {
+  margin-top: 0.25rem; font-weight: 600; color: #eaf6ff;
+  font-size: clamp(1.2rem, 2.6vw, 2.6rem);
+  font-family: Georgia, "Times New Roman", serif;
+}
+#memTags { margin-top: 0.55rem; display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: center; }
+#memTags b {
+  font-weight: 500; background: #10243acc;
+  font-size: clamp(0.72rem, 1.1vw, 1.2rem);
+  border: 1px solid #23507a88; color: #bfe4ff;
+  padding: 0.16rem 0.6rem; border-radius: 999px;
+}
+#galleryLink {
+  pointer-events: auto; text-decoration: none;
+  background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+  border-radius: 999px; padding: 0.35rem 1rem; font-size: 0.8rem;
+}
+#memBtn {
+  pointer-events: auto;
+  background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+  border-radius: 999px; padding: 0.35rem 1rem; font-size: 0.8rem; cursor: pointer;
+}
+body.memories #topbar, body.memories #legend, body.memories #panel,
+body.memories #catPanel, body.memories #lightbox { display: none; }
+
+#lightbox {
+  position: fixed; inset: 0; z-index: 30;
+  background: #010409f2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transition: opacity 0.2s;
+}
+#lightbox.hidden { opacity: 0; pointer-events: none; }
+#lbImg {
+  max-width: 100vw; max-height: calc(100vh - 6rem);
+  object-fit: contain; border-radius: 4px;
+  box-shadow: 0 0 60px #49c6ff33;
+}
+#lbClose {
+  position: absolute; top: 0.8rem; right: 0.9rem;
+  background: #10243acc; color: #bfe4ff; border: 1px solid #23507a;
+  border-radius: 999px; width: 2.4rem; height: 2.4rem;
+  font-size: 1rem; cursor: pointer;
+}
+#lbRemove, #memRemove {
+  position: absolute; top: 0.8rem; left: 0.9rem; z-index: 5;
+  background: #2a1015cc; color: #ffb4b4; border: 1px solid #7a2330;
+  border-radius: 999px; width: 2.4rem; height: 2.4rem;
+  font-size: 1rem; cursor: pointer;
+}
+#lbMeta {
+  padding: 0.7rem 1rem; text-align: center; max-width: 92vw;
+}
+#lbDate { font-size: 0.85rem; opacity: 0.75; }
+#lbTags { margin-top: 0.45rem; display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: center; }
+#lbTags b {
+  font-weight: 500; font-size: 0.72rem; background: #10243a;
+  border: 1px solid #23507a; color: #bfe4ff;
+  padding: 0.15rem 0.55rem; border-radius: 999px;
+}
+
+#legend {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  display: flex; justify-content: center; gap: 1.1rem; flex-wrap: wrap;
+  padding: 0.6rem; font-size: 0.72rem; opacity: 0.75;
+  background: linear-gradient(transparent, #0a0c14dd);
+  pointer-events: none;
+}
+#legend i {
+  display: inline-block; width: 14px; height: 3px; border-radius: 2px;
+  margin-right: 0.35rem; vertical-align: middle;
+}
+
+@media (max-width: 560px) {
+  #topbar .hint { display: none; }
+  #topbar .title { white-space: nowrap; }
+}
+
+body.ambient #panel, body.ambient #legend { display: none; }
+body:not(.photoview) #legend { display: none; }  /* relations are a photo-view concept */
+body.ambient #topbar { opacity: 0; transition: opacity 1s; }
+body.ambient #topbar:hover { opacity: 1; }

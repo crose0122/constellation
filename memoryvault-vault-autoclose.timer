@@ -1,0 +1,9 @@
+[Unit]
+Description=Memory Vault - periodic idle-vault check
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

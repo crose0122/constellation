@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Vault — Curation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #010409; color: #dfeefa;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 1rem; max-width: 900px; margin: 0 auto;
+  }
+  h1 { font-size: 1.05rem; }
+  .sub { color: #5f7d95; font-size: 0.78rem; margin: 0.25rem 0 1rem; }
+  .tabs { display: flex; gap: 0.4rem; margin: 0.6rem 0 1rem; flex-wrap: wrap; }
+  .tabs a { color: #8fd4ff; font-size: 0.8rem; text-decoration: none;
+    padding: 0.35rem 0.9rem; border: 1px solid #23507a; border-radius: 999px; }
+  .tabs a.on { background: #10243a; color: #dfeefa; font-weight: 600; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.6rem;
+  }
+  .card {
+    background: #0a1420; border: 1px solid #1c3e60; border-radius: 10px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .card img { width: 100%; aspect-ratio: 1; object-fit: contain;
+    background: #06101c; cursor: zoom-in; }
+  .meta { font-size: 0.62rem; color: #5f7d95; padding: 0.3rem 0.45rem 0; }
+  .card button {
+    margin: 0.35rem 0.35rem 0; padding: 0.45rem; border: 0; border-radius: 8px;
+    font-weight: 600; cursor: pointer; font-size: 0.72rem;
+  }
+  .card button:last-child { margin-bottom: 0.35rem; }
+  .card .restore { background: #14532d; color: #bbf7d0; }
+  .card .tovault { background: #2e1065; color: #ddd6fe; }
+  .card .todelete { background: #450a0a; color: #fecaca; }
+  .card.done { opacity: 0.35; }
+  .card.done button { background: #1c3e60; color: #9fc0d8; }
+  #more {
+    display: block; margin: 1.2rem auto; padding: 0.7rem 2rem;
+    background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+    border-radius: 999px; cursor: pointer; font-size: 0.85rem;
+  }
+  #lb { position: fixed; inset: 0; z-index: 30; background: #010409f8;
+    display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+  #lb.hidden { display: none; }
+  #lb img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+</style>
+</head>
+<body>
+<h1 id="binTitle"></h1>
+<div class="tabs" id="tabs"></div>
+<p class="sub" id="count"></p>
+<button id="purgeAll" style="display:block;margin:0 0 1rem;padding:0.6rem 1.4rem;
+  background:#450a0a;color:#fecaca;border:1px solid #7f1d1d;border-radius:999px;
+  cursor:pointer;font-weight:600">⚠ Permanently delete everything in this bin</button>
+<div class="grid" id="grid"></div>
+<button id="more">load more</button>
+<div id="lb" class="hidden"><img id="lbImg" alt=""></div>
+<script>
+let offset = 0, total = null;
+const BINS = {
+  Trash:   { tab: "🗑 auto-Trash",  title: "🗑 Trash review — is anything in here a real memory?" },
+  Removed: { tab: "📤 Removed",     title: "📤 Removed photos — restore anything you want back" },
+  Delete:  { tab: "☠ Marked for deletion", title: "☠ Marked for permanent deletion — purge below when you're sure" },
+};
+let bin = new URLSearchParams(location.search).get("v");
+if (!(bin in BINS)) bin = "Trash";
+document.getElementById("binTitle").textContent = BINS[bin].title;
+const tabs = document.getElementById("tabs");
+for (const [b, cfg] of Object.entries(BINS)) {
+  const a = document.createElement("a");
+  a.textContent = cfg.tab;
+  a.href = b === "Trash" ? "/curation" : `/curation?v=${b}`;
+  if (b === bin) a.className = "on";
+  tabs.appendChild(a);
+}
+
+const lb = document.getElementById("lb");
+lb.addEventListener("click", () => lb.classList.add("hidden"));
+function view(p) {
+  document.getElementById("lbImg").src = p.display || p.thumb;
+  lb.classList.remove("hidden");
+}
+
+function actBtn(cls, label, fn) {
+  const b = document.createElement("button");
+  b.className = cls; b.textContent = label;
+  b.addEventListener("click", fn);
+  return b;
+}
+
+async function load() {
+  const res = await fetch(`/api/curation?offset=${offset}&limit=60&v=${bin}`);
+  const d = await res.json();
+  total = d.total;
+  document.getElementById("count").textContent =
+    `${total.toLocaleString()} items in this bin — biggest first. Tap a photo to view it full-screen.`;
+  const grid = document.getElementById("grid");
+  for (const p of d.photos) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const img = document.createElement("img");
+    img.src = p.thumb; img.loading = "lazy";
+    img.addEventListener("click", () => view(p));
+    card.appendChild(img);
+    const meta = document.createElement("div");
+    meta.className = "meta"; meta.textContent = `${p.dims} · ${p.reason}`;
+    card.appendChild(meta);
+    const settle = (label) => {
+      card.classList.add("done");
+      for (const b of card.querySelectorAll("button")) {
+        b.disabled = true;
+        b.textContent = label;
+      }
+    };
+    card.appendChild(actBtn("restore",
+        bin === "Delete" ? "Keep — un-mark" : "Not trash — restore",
+        async () => {
+      const r = await fetch(`/api/curation/restore?id=${p.id}`);
+      if (r.ok) settle("restored ✓");
+    }));
+    const doVault = async (dest) => {
+      if (!confirm("Move this photo into the encrypted Personal Vault? It leaves the library entirely — the vault becomes its only copy.")) return;
+      const r = await fetch(`/api/photo/vault?id=${p.id}&dest=${dest}`);
+      if (r.ok) { settle("in the vault 🔒"); return; }
+      if (r.status === 409) alert("The vault is locked. Open it first (mvault vault open on the VM), then try again.");
+      else alert("Vault move failed — the photo was not touched.");
+    };
+    const vaultBtn = actBtn("tovault", "Move to Personal Vault", () => {
+      // first tap reveals the destination choice
+      const a = actBtn("tovault", "→ Partner's folder", () => doVault("partner"));
+      const b = actBtn("tovault", "→ Other", () => doVault("other"));
+      vaultBtn.replaceWith(a, b);
+    });
+    card.appendChild(vaultBtn);
+    if (bin !== "Delete") {
+      card.appendChild(actBtn("todelete", "Mark for permanent delete", async () => {
+        const r = await fetch(`/api/photo/markdelete?id=${p.id}`);
+        if (r.ok) settle("marked ☠");
+      }));
+    }
+    grid.appendChild(card);
+  }
+  offset += d.photos.length;
+  document.getElementById("more").style.display =
+    offset >= total ? "none" : "block";
+}
+document.getElementById("purgeAll").addEventListener("click", async () => {
+  const word = prompt(
+    `This PERMANENTLY deletes all ${total ?? "?"} photos in the ${bin} bin ` +
+    `from the library, thumbnails, database, and staging — no undo, no bin, gone.\n\n` +
+    `Type DELETE to confirm:`);
+  if (word !== "DELETE") return;
+  const r = await fetch(`/api/purge?bin=${bin}&confirm=DELETE`);
+  if (r.ok) {
+    const d = await r.json();
+    alert(`${d.purged} photos permanently deleted.`);
+    location.reload();
+  } else {
+    alert("Purge failed — nothing was deleted.");
+  }
+});
+document.getElementById("more").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>

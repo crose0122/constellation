@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Vault — Gallery</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { background: #010409; color: #dfeefa;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: baseline;
+    gap: 0.8rem; padding: 0.8rem 1rem;
+    background: linear-gradient(#010409f0, #010409c0); backdrop-filter: blur(6px);
+  }
+  header h1 { font-size: 1rem; }
+  header .n { color: #5f7d95; font-size: 0.78rem; white-space: nowrap; }
+  header a { color: #8fd4ff; font-size: 1rem; text-decoration: none; }
+  #search {
+    flex: 1; min-width: 0; background: #0a1420; color: #dfeefa;
+    border: 1px solid #1c3e60; border-radius: 999px;
+    padding: 0.45rem 0.9rem; font-size: 0.9rem; outline: none;
+  }
+  #search:focus { border-color: #49c6ff; }
+  #selMode {
+    background: #0a1420; color: #9fc0d8; border: 1px solid #1c3e60;
+    border-radius: 999px; width: 2.2rem; height: 2.2rem; cursor: pointer;
+  }
+  #selMode.on { background: #14532d; color: #bbf7d0; border-color: #2e6b4f; }
+  .grid img.sel { outline: 3px solid #5ec98f; outline-offset: -3px; opacity: 0.7; }
+  #selBar {
+    position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+    z-index: 15; background: #3f1d1d; color: #fecaca; border: 1px solid #7f1d1d;
+    border-radius: 999px; padding: 0.7rem 1.6rem; font-weight: 600;
+    cursor: pointer; display: none;
+  }
+  .grid {
+    display: grid; gap: 3px; padding: 3px;
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  }
+  .grid img {
+    width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+    background: #0a1420; cursor: pointer;
+  }
+  #sentinel { height: 60px; }
+
+  #lb { position: fixed; inset: 0; z-index: 20; background: #010409f8;
+    display: flex; align-items: center; justify-content: center; }
+  #lb.hidden { display: none; }
+  #lbImg { max-width: 100vw; max-height: calc(100vh - 4rem); object-fit: contain; }
+  #lbChips { position: absolute; bottom: 2.6rem; left: 0; right: 0;
+    display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: center;
+    padding: 0 1rem; z-index: 22; }
+  #lbChips b { font-weight: 500; font-size: 0.76rem; background: #10243acc;
+    border: 1px solid #23507a; color: #bfe4ff; cursor: pointer;
+    padding: 0.2rem 0.65rem; border-radius: 999px; }
+  #lbBar {
+    position: absolute; bottom: 0; left: 0; right: 0; text-align: center;
+    padding: 0.7rem; font-size: 0.85rem; color: #9fc0d8;
+    background: linear-gradient(transparent, #010409e0);
+  }
+  .nav {
+    position: absolute; top: 0; bottom: 0; width: 34%; cursor: pointer;
+    display: flex; align-items: center; color: #ffffff22; font-size: 2.4rem;
+    user-select: none;
+  }
+  .nav:active { color: #8fd4ff66; }
+  #prev { left: 0; justify-content: flex-start; padding-left: 0.5rem; }
+  #next { right: 0; justify-content: flex-end; padding-right: 0.5rem; }
+  #lbClose {
+    position: absolute; top: 0.7rem; right: 0.8rem; z-index: 22;
+    background: #10243acc; color: #bfe4ff; border: 1px solid #23507a;
+    border-radius: 999px; width: 2.3rem; height: 2.3rem; cursor: pointer;
+  }
+  #lbRemove {
+    position: absolute; top: 0.7rem; left: 0.8rem; z-index: 22;
+    background: #27272acc; color: #a1a1aa; border: 1px solid #3f3f46;
+    border-radius: 999px; padding: 0 0.9rem; height: 2.3rem; cursor: pointer;
+    font-size: 0.78rem;
+  }
+  #lbVault {
+    position: absolute; top: 3.4rem; left: 0.8rem; z-index: 22;
+    background: #2e1065cc; color: #ddd6fe; border: 1px solid #4c1d95;
+    border-radius: 999px; padding: 0 0.9rem; height: 2.3rem; cursor: pointer;
+    font-size: 0.78rem;
+  }
+  #lbShare {
+    position: absolute; top: 6.1rem; left: 0.8rem; z-index: 22;
+    background: #0c4a6ecc; color: #bae6fd; border: 1px solid #0369a1;
+    border-radius: 999px; padding: 0 0.9rem; height: 2.3rem; cursor: pointer;
+    font-size: 0.78rem;
+  }
+  #lb.zoomed .nav { pointer-events: none; }
+  #lb.zoomed { touch-action: none; }
+  #lbImg { transition: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📷</h1>
+  <button id="selMode">☑</button>
+  <input id="search" type="search" placeholder="search: alex birthday 2019, beach, dog…">
+  <span class="n" id="count">…</span>
+  <a href="/">🌌</a>
+</header>
+<div class="grid" id="grid"></div>
+<div id="sentinel"></div>
+<button id="selBar">Remove selected</button>
+
+<div id="lb" class="hidden">
+  <button id="lbClose">✕</button>
+  <button id="lbRemove">🗑 Remove</button>
+  <button id="lbVault">🔒 Vault</button>
+  <button id="lbShare">📤 Share</button>
+  <div class="nav" id="prev">‹</div>
+  <img id="lbImg" alt="">
+  <div class="nav" id="next">›</div>
+  <div id="lbChips"></div>
+  <div id="lbBar"></div>
+</div>
+
+<script>
+let photos = [];
+let total = null, loading = false, cur = -1;
+let query = new URLSearchParams(location.search).get("search") || "";
+
+const searchBox = document.getElementById("search");
+if (query) searchBox.value = query;
+let debounce = null;
+searchBox.addEventListener("input", () => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => {
+    query = searchBox.value.trim();
+    photos = []; total = null; cur = -1;
+    document.getElementById("grid").innerHTML = "";
+    loadMore();
+  }, 350);
+});
+
+async function loadMore() {
+  if (loading || (total !== null && photos.length >= total)) return;
+  loading = true;
+  try {
+    const res = await fetch(
+      `/api/gallery?offset=${photos.length}&limit=120&search=${encodeURIComponent(query)}`);
+    if (!res.ok) return;
+    const d = await res.json();
+    total = d.total;
+    document.getElementById("count").textContent = `${total.toLocaleString()} photos`;
+    const grid = document.getElementById("grid");
+    const base = photos.length;
+    d.photos.forEach((p, j) => {
+      photos.push(p);
+      const img = document.createElement("img");
+      img.src = p.thumb;
+      img.loading = "lazy";
+      img.addEventListener("click", () => {
+        if (selecting) { toggleSel(base + j, img); return; }
+        open(base + j);
+      });
+      grid.appendChild(img);
+    });
+  } finally { loading = false; }
+}
+
+
+/* photo zoom: wheel / pinch to zoom (1-6x), drag to pan, double-tap
+   toggles, resets per photo. Swipe-nav only fires at 1x. */
+function makeZoomable(imgEl, host) {
+  let sc = 1, tx = 0, ty = 0;
+  const zptrs = new Map();
+  let zPinchD = null, zPan = null, lastTap = 0;
+  function apply() {
+    imgEl.style.transform = `translate(${tx}px, ${ty}px) scale(${sc})`;
+    imgEl.style.transformOrigin = "center center";
+    host.classList.toggle("zoomed", sc > 1.01);
+  }
+  function reset() { sc = 1; tx = 0; ty = 0; apply(); }
+  function zoomAt(cx, cy, factor) {
+    const ns = Math.max(1, Math.min(6, sc * factor));
+    const k = ns / sc;
+    tx = cx + (tx - cx) * k - (cx - innerWidth / 2) * (k - 1) * 0;
+    tx = (tx - (cx - innerWidth / 2)) * k + (cx - innerWidth / 2);
+    ty = (ty - (cy - innerHeight / 2)) * k + (cy - innerHeight / 2);
+    sc = ns;
+    if (sc <= 1.01) { tx = 0; ty = 0; }
+    apply();
+  }
+  host.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0018));
+  }, { passive: false });
+  host.addEventListener("pointerdown", (e) => {
+    zptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (zptrs.size === 2) zPinchD = null;
+    else if (sc > 1.01) zPan = { x: e.clientX, y: e.clientY };
+  });
+  host.addEventListener("pointermove", (e) => {
+    if (zptrs.has(e.pointerId)) zptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (zptrs.size === 2) {
+      const [p1, p2] = [...zptrs.values()];
+      const d = Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
+      if (zPinchD) zoomAt((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, d / zPinchD);
+      zPinchD = d;
+    } else if (zPan) {
+      tx += e.clientX - zPan.x; ty += e.clientY - zPan.y;
+      zPan = { x: e.clientX, y: e.clientY };
+      apply();
+    }
+  });
+  const up = (e) => {
+    zptrs.delete(e.pointerId);
+    if (zptrs.size < 2) zPinchD = null;
+    zPan = null;
+  };
+  host.addEventListener("pointerup", up);
+  host.addEventListener("pointercancel", up);
+  imgEl.addEventListener("click", (e) => {
+    const now = performance.now();
+    if (now - lastTap < 350) {
+      if (sc > 1.01) reset();
+      else zoomAt(e.clientX, e.clientY, 2.6);
+    }
+    lastTap = now;
+  });
+  return { reset, zoomed: () => sc > 1.01 };
+}
+
+const zoomCtl = makeZoomable(document.getElementById("lbImg"), document.getElementById("lb"));
+
+function open(i) {
+  if (i < 0 || i >= photos.length) return;
+  cur = i;
+  const p = photos[i];
+  zoomCtl.reset();
+  const img = document.getElementById("lbImg");
+  img.src = p.thumb;
+  img.src = p.display;
+  document.getElementById("lbBar").textContent =
+    `${i + 1} / ${total ?? photos.length}` +
+    (p.taken_at ? " · " + new Date(p.taken_at).toDateString() : "");
+  document.getElementById("lb").classList.remove("hidden");
+  loadChips(p, i);
+  if (i > photos.length - 20) loadMore();          // stay ahead of the swipe
+  for (const k of [i + 1, i + 2]) {                 // preload neighbors
+    if (photos[k]) { const pre = new Image(); pre.src = photos[k].display; }
+  }
+}
+const CHIP_COLORS = { people: "#ffd27a", pets: "#ffb36b", occasion: "#ff5fa8",
+  milestone: "#ff5fa8", emotion: "#b78bff", sentiment: "#b78bff",
+  location: "#49c6ff", activity: "#5ef2c4", season_holiday: "#ff8d66",
+  time_of_day: "#7fd4ff", place: "#8fe08a", year: "#9db4d0" };
+async function loadChips(p, at) {
+  const chips = document.getElementById("lbChips");
+  chips.innerHTML = "";
+  try {
+    const d = await (await fetch(`/api/photo?id=${p.id}`)).json();
+    if (cur !== at) return;                        // user already swiped on
+    for (const [dim, values] of Object.entries(d.tags || {})) {
+      if (dim === "curation" || dim === "curation_reason") continue;
+      for (const v of values) {
+        if (["None", "Unknown"].includes(v)) continue;
+        const b = document.createElement("b");
+        b.textContent = v;
+        b.style.borderColor = CHIP_COLORS[dim] || "#23507a";
+        b.addEventListener("click", () =>
+          location.href = `/node?dim=${encodeURIComponent(dim)}&value=${encodeURIComponent(v)}`);
+        chips.appendChild(b);
+      }
+    }
+  } catch (e) { /* tags are decoration — never block the photo */ }
+}
+function close() { document.getElementById("lb").classList.add("hidden"); cur = -1; }
+
+document.getElementById("lbClose").addEventListener("click", close);
+document.getElementById("lbRemove").addEventListener("click", async () => {
+  if (cur < 0) return;
+  if (!confirm("Remove this photo from the gallery? (It moves to the Removed bin — restorable, nothing deleted.)")) return;
+  const p = photos[cur];
+  const r = await fetch(`/api/photo/remove?id=${p.id}`);
+  if (!r.ok) return;
+  // drop it from the grid and slide to the next photo
+  const grid = document.getElementById("grid");
+  grid.children[cur]?.remove();
+  photos.splice(cur, 1);
+  total -= 1;
+  document.getElementById("count").textContent = `${total.toLocaleString()} photos`;
+  if (photos.length === 0) { close(); return; }
+  open(Math.min(cur, photos.length - 1));
+});
+document.getElementById("lbShare").addEventListener("click", async () => {
+  if (cur < 0) return;
+  const last = localStorage.getItem("shareEmail") || "";
+  const to = prompt("Email this photo to:", last);
+  if (!to) return;
+  localStorage.setItem("shareEmail", to.trim());
+  const p = photos[cur];
+  const btn = document.getElementById("lbShare");
+  btn.textContent = "sending…";
+  const r = await fetch(
+    `/api/photo/share?id=${p.id}&to=${encodeURIComponent(to.trim())}`)
+    .catch(() => null);
+  if (r && r.ok) btn.textContent = "sent ✓";
+  else if (r && r.status === 503)
+    { btn.textContent = "📤 Share"; alert("Email isn't configured yet — the sending address needs its app password added on the VM."); }
+  else { btn.textContent = "📤 Share"; alert("Send failed — check the address and try again."); }
+  setTimeout(() => { btn.textContent = "📤 Share"; }, 4000);
+});
+document.getElementById("lbVault").addEventListener("click", async () => {
+  if (cur < 0) return;
+  const dest = confirm(
+    "Move this photo into the encrypted Personal Vault?\n\n" +
+    "OK = Partner's folder · Cancel then OK = Other")
+    ? "partner"
+    : (confirm("Put it in the Other folder instead?") ? "other" : null);
+  if (!dest) return;
+  const p = photos[cur];
+  const r = await fetch(`/api/photo/vault?id=${p.id}&dest=${dest}`);
+  if (r.status === 409) { alert("The vault is locked. Open it first (mvault vault open on the VM), then try again."); return; }
+  if (!r.ok) { alert("Vault move failed — the photo was not touched."); return; }
+  const grid = document.getElementById("grid");
+  grid.children[cur]?.remove();
+  photos.splice(cur, 1);
+  total -= 1;
+  document.getElementById("count").textContent = `${total.toLocaleString()} photos`;
+  if (photos.length === 0) { close(); return; }
+  open(Math.min(cur, photos.length - 1));
+});
+document.getElementById("prev").addEventListener("click", () => open(cur - 1));
+document.getElementById("next").addEventListener("click", () => open(cur + 1));
+window.addEventListener("keydown", (e) => {
+  if (cur < 0) return;
+  if (e.key === "Escape") close();
+  if (e.key === "ArrowLeft") open(cur - 1);
+  if (e.key === "ArrowRight") open(cur + 1);
+});
+let tx = null;
+document.getElementById("lb").addEventListener("touchstart",
+  (e) => { tx = e.touches[0].clientX; }, { passive: true });
+document.getElementById("lb").addEventListener("touchend", (e) => {
+  if (tx === null || cur < 0) return;
+  const dx = e.changedTouches[0].clientX - tx;
+  tx = null;
+  if (zoomCtl.zoomed()) { } else if (dx > 50) open(cur - 1);
+  else if (dx < -50) open(cur + 1);
+}, { passive: true });
+
+let selecting = false;
+const selected = new Set();
+function toggleSel(i, img) {
+  const id = photos[i].id;
+  if (selected.has(id)) { selected.delete(id); img.classList.remove("sel"); }
+  else { selected.add(id); img.classList.add("sel"); }
+  const bar = document.getElementById("selBar");
+  bar.style.display = selected.size ? "block" : "none";
+  bar.textContent = `Remove ${selected.size} selected`;
+}
+document.getElementById("selMode").addEventListener("click", () => {
+  selecting = !selecting;
+  document.getElementById("selMode").classList.toggle("on", selecting);
+  if (!selecting) {
+    selected.clear();
+    document.querySelectorAll(".grid img.sel").forEach((el) => el.classList.remove("sel"));
+    document.getElementById("selBar").style.display = "none";
+  }
+});
+document.getElementById("selBar").addEventListener("click", async () => {
+  if (!selected.size) return;
+  if (!confirm(`Remove ${selected.size} photos from the gallery? (They go to the restorable Removed bin.)`)) return;
+  for (const id of selected) await fetch(`/api/photo/remove?id=${id}`).catch(() => {});
+  location.reload();
+});
+
+new IntersectionObserver((es) => {
+  if (es.some((x) => x.isIntersecting)) loadMore();
+}).observe(document.getElementById("sentinel"));
+loadMore();
+</script>
+</body>
+</html>

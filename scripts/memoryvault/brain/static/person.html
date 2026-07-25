@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Memory Vault — Face Review</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #010409; color: #dfeefa;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 1rem; max-width: 980px; margin: 0 auto;
+  }
+  h1 { font-size: 1.05rem; }
+  .sub { color: #5f7d95; font-size: 0.78rem; margin: 0.25rem 0 1rem; }
+  a { color: #8fd4ff; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 0.5rem;
+  }
+  .f { position: relative; border-radius: 10px; overflow: hidden;
+    background: #0a1420; border: 1px solid #1c3e60; aspect-ratio: 1; }
+  .f img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+  .f button {
+    position: absolute; top: 4px; right: 4px; width: 1.7rem; height: 1.7rem;
+    border: 0; border-radius: 999px; background: #450a0acc; color: #fecaca;
+    cursor: pointer; font-size: 0.8rem; line-height: 1;
+  }
+  .f.gone { opacity: 0.25; }
+  .f.gone button { background: #1c3e60; }
+  #lb { position: fixed; inset: 0; z-index: 30; background: #010409f8;
+    display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+  #lb.hidden { display: none; }
+  #lb img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
+</style>
+</head>
+<body>
+<h1 id="title">Face review</h1>
+<p class="sub"><a href="/people">← all people</a> &nbsp; Tap a face to see its
+full photo. Tap <b>✕</b> on any face that is NOT this person — the photo loses
+the tag and that face can never be matched to this name again.</p>
+<div class="grid" id="grid"></div>
+<div id="lb" class="hidden"><img id="lbImg" alt=""></div>
+<script>
+const label = new URLSearchParams(location.search).get("label") || "";
+document.getElementById("title").textContent = `Faces tagged “${label}”`;
+const lb = document.getElementById("lb");
+lb.addEventListener("click", () => lb.classList.add("hidden"));
+
+async function load() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "<p>loading faces…</p>";
+  let d = null;
+  for (let tries = 0; tries < 5 && !d; tries++) {
+    try {
+      const res = await fetch(`/api/person?label=${encodeURIComponent(label)}`);
+      if (res.ok) d = await res.json();
+    } catch (e) { /* transient */ }
+    if (!d) await new Promise((r) => setTimeout(r, 2000));
+  }
+  grid.innerHTML = "";
+  if (!d || !d.faces.length) {
+    grid.innerHTML = "<p>No faces carry this label.</p>";
+    return;
+  }
+  document.getElementById("title").textContent =
+    `Faces tagged “${label}” — ${d.faces.length}`;
+  for (const f of d.faces) {
+    const cell = document.createElement("div");
+    cell.className = "f";
+    const img = document.createElement("img");
+    img.src = f.face; img.loading = "lazy";
+    img.addEventListener("click", () => {
+      document.getElementById("lbImg").src = f.photo;
+      lb.classList.remove("hidden");
+    });
+    const x = document.createElement("button");
+    x.textContent = "✕";
+    x.title = `not ${label}`;
+    x.addEventListener("click", async () => {
+      // optimistic: mark it gone immediately, revert only on failure
+      cell.classList.add("gone");
+      x.disabled = true;
+      try {
+        const r = await fetch(`/api/people/notthem?face=${f.id}`);
+        if (!r.ok) throw new Error(r.status);
+      } catch (e) {
+        cell.classList.remove("gone");
+        x.disabled = false;
+      }
+    });
+    cell.appendChild(img);
+    cell.appendChild(x);
+    grid.appendChild(cell);
+  }
+}
+load();
+</script>
+</body>
+</html>

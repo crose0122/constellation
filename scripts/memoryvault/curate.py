@@ -1,0 +1,219 @@
+"""Curation pass: tag photos that are almost certainly not memories.
+
+Heuristics only — no model call, so it runs in seconds over the whole
+library. Writes a `curation: Trash` tag (with a reason value alongside)
+that the UI treats specially: the Brain shows Trash as a reviewable
+category, the Memories stream excludes it, and NOTHING is deleted —
+per the project invariant, deletion always requires a human.
+
+Signals (any one is enough):
+  tiny        — shortest side < 200px (icons, avatars, web cache)
+  screenshot  — no camera EXIF and pixel-exact common screen dimensions
+  extreme     — aspect ratio beyond 4:1 (banners, sprite strips)
+  cachepath   — the file only ever appeared under cache/temp/thumbnail dirs
+"""
+from __future__ import annotations
+
+import re
+
+from . import db as dbm
+from . import config
+
+MODEL_VERSION = "curate-heuristic-1.0"
+MIN_PX = 200
+EXTREME_ASPECT = 4.0
+
+_SCREEN_DIMS = {
+    (1920, 1080), (1080, 1920), (1366, 768), (768, 1366), (2560, 1440),
+    (1440, 2560), (1280, 720), (720, 1280), (1536, 2048), (2048, 1536),
+    (1170, 2532), (1080, 2400), (1440, 3120), (1080, 2340), (750, 1334),
+    (828, 1792), (1125, 2436), (640, 960), (600, 800), (800, 600),
+}
+_CACHE_RE = re.compile(
+    r"/(cache|\.cache|thumbnails?|\.thumbnails|temp|tmp|appdata|"
+    r"\.stversions|node_modules|site-packages)/", re.IGNORECASE)
+
+
+def curate(conn) -> dict:
+    tagged = 0
+    rows = conn.execute(
+        "SELECT p.id, p.width, p.height, p.camera, "
+        "  (SELECT GROUP_CONCAT(f.source_path, '||') FROM files f "
+        "   WHERE f.photo_id = p.id) AS paths "
+        "FROM photos p WHERE p.id NOT IN "
+        "  (SELECT photo_id FROM tags WHERE dimension = 'curation')"
+    ).fetchall()
+    for r in rows:
+        w, h = r["width"] or 0, r["height"] or 0
+        reason = None
+        if w and h:
+            if min(w, h) < MIN_PX:
+                reason = "tiny"
+            elif max(w, h) / max(1, min(w, h)) > EXTREME_ASPECT:
+                reason = "extreme-aspect"
+            elif not r["camera"] and (w, h) in _SCREEN_DIMS:
+                has_face = conn.execute(
+                    "SELECT 1 FROM faces WHERE photo_id = ? LIMIT 1",
+                    (r["id"],)).fetchone()
+                if not has_face:
+                    reason = "screenshot"
+        if reason is None and r["paths"]:
+            if all(_CACHE_RE.search(p) for p in r["paths"].split("||")):
+                reason = "cache-path"
+        if reason:
+            conn.execute(
+                "INSERT OR IGNORE INTO tags "
+                "(photo_id, dimension, value, confidence, model_version) "
+                "VALUES (?, 'curation', 'Trash', 0.9, ?)",
+                (r["id"], MODEL_VERSION),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO tags "
+                "(photo_id, dimension, value, confidence, model_version) "
+                "VALUES (?, 'curation_reason', ?, 0.9, ?)",
+                (r["id"], reason, MODEL_VERSION),
+            )
+            tagged += 1
+    conn.commit()
+    total = conn.execute(
+        "SELECT COUNT(DISTINCT photo_id) c FROM tags "
+        "WHERE dimension = 'curation' AND value = 'Trash'"
+    ).fetchone()["c"]
+    # rollup: any pet value gets the umbrella 'Pets' tag so an aggregate
+    # category exists (No Pets stays in the DB but never in the UI)
+    conn.execute(
+        "INSERT OR IGNORE INTO tags (photo_id, dimension, value, confidence, "
+        "model_version) SELECT DISTINCT photo_id, 'pets', 'Pets', 0.9, "
+        "'rollup-1.0' FROM tags WHERE dimension = 'pets' "
+        "AND value NOT IN ('No Pets', 'None', 'Unknown', 'Pets')")
+    conn.commit()
+    return {"newly_tagged": tagged, "trash_total": total,
+            "examined": len(rows)}
+
+
+RESCUE_PROMPT = (
+    "Is this a real photograph capturing people, pets, places, or a moment "
+    "of family life? Answer yes even if it is small, blurry, dark, old, or "
+    "low quality — a real memory in poor condition is still a yes. "
+    "Answer no ONLY for things that were never photographs of life: app or "
+    "game screenshots, user interfaces, documents, receipts, memes, logos, "
+    "graphics, textures, icons, or web images. "
+    "Answer with exactly one word: yes or no."
+)
+
+
+def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
+    """GPU second-opinion over the Trash bin: the heuristics never look at
+    pixels, so real photos with stripped EXIF (messenger apps) or small
+    dimensions get mis-binned. A yes verdict flips the photo to 'Kept' — a
+    permanent override the heuristics respect. Checked photos are stamped
+    (curation_check) so nightly re-runs only review NEW trash."""
+    from .tag import model_image_b64
+    import requests
+
+    sql = (
+        "SELECT p.id, p.library_path FROM photos p "
+        "JOIN tags t ON t.photo_id = p.id "
+        "WHERE t.dimension = 'curation' AND t.value = 'Trash' "
+        "AND p.library_path IS NOT NULL AND p.id NOT IN "
+        "(SELECT photo_id FROM tags WHERE dimension = 'curation_check') "
+    )
+    if shard:
+        i, m = (int(x) for x in shard.split("/"))
+        sql += f"AND p.id % {m} = {i} "
+    sql += "ORDER BY p.id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql).fetchall()
+    stats = {"checked": 0, "rescued": 0, "errors": 0}
+    for i, row in enumerate(rows, 1):
+        try:
+            b64 = model_image_b64(
+                str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
+            r = requests.post(config.OLLAMA_URL, json={
+                "model": config.VISION_MODEL, "prompt": RESCUE_PROMPT,
+                "images": [b64], "stream": False}, timeout=180)
+            r.raise_for_status()
+            ans = r.json().get("response", "").strip().lower()
+            if ans.startswith("yes"):
+                conn.execute(
+                    "UPDATE tags SET value = 'Kept', "
+                    "model_version = 'rescue-1.0' WHERE photo_id = ? "
+                    "AND dimension = 'curation'", (row["id"],))
+                stats["rescued"] += 1
+            conn.execute(
+                "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                "confidence, model_version) VALUES "
+                "(?, 'curation_check', 'rescue-reviewed', 0.8, 'rescue-1.0')",
+                (row["id"],))
+            stats["checked"] += 1
+        except Exception as e:
+            stats["errors"] += 1
+            from .db import record_error
+            record_error(conn, "rescue", repr(e), photo_id=row["id"])
+        conn.commit()
+        if i % 200 == 0:
+            print(f"  {i}/{len(rows)} reviewed, {stats['rescued']} rescued",
+                  flush=True)
+    return stats
+
+
+DOC_PROMPT = (
+    "Is this image junk paperwork or interface content: a document, receipt, "
+    "form, app screenshot, settings page, whiteboard, or page of text with "
+    "NO people visible? If any person, face, pet, or family moment appears "
+    "anywhere in the image, answer no. "
+    "Answer with exactly one word: yes or no."
+)
+
+
+def vision_docs(conn, shard: str | None = None, limit: int | None = None) -> dict:
+    """GPU pass: bin photographed paperwork/documents as Trash(document).
+    Runs after tagging so the GPUs are free; restorable via /curation."""
+    from .tag import model_image_b64
+    import requests
+
+    sql = (
+        "SELECT id, library_path FROM photos WHERE status IN "
+        "('tagged','noted') AND library_path IS NOT NULL AND id NOT IN "
+        "(SELECT photo_id FROM tags WHERE dimension = 'curation') "
+    )
+    if shard:
+        i, m = (int(x) for x in shard.split("/"))
+        sql += f"AND id % {m} = {i} "
+    sql += "ORDER BY id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql).fetchall()
+    stats = {"checked": 0, "documents": 0, "errors": 0}
+    for i, row in enumerate(rows, 1):
+        try:
+            b64 = model_image_b64(
+                str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
+            r = requests.post(config.OLLAMA_URL, json={
+                "model": config.VISION_MODEL, "prompt": DOC_PROMPT,
+                "images": [b64], "stream": False}, timeout=180)
+            r.raise_for_status()
+            ans = r.json().get("response", "").strip().lower()
+            if ans.startswith("yes"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                    "confidence, model_version) VALUES "
+                    "(?, 'curation', 'Trash', 0.8, 'docscan-1.0')",
+                    (row["id"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                    "confidence, model_version) VALUES "
+                    "(?, 'curation_reason', 'document', 0.8, 'docscan-1.0')",
+                    (row["id"],))
+                stats["documents"] += 1
+            stats["checked"] += 1
+        except Exception as e:
+            stats["errors"] += 1
+            from .db import record_error
+            record_error(conn, "docscan", repr(e), photo_id=row["id"])
+        conn.commit()
+        if i % 200 == 0:
+            print(f"  {i}/{len(rows)} checked, {stats['documents']} documents",
+                  flush=True)
+    return stats

@@ -1,0 +1,15 @@
+[Unit]
+Description=Memory Vault - auto-close idle LUKS vault (SPEC.md section 6)
+
+[Service]
+Type=oneshot
+# close the vault if mounted and not accessed in the last 30 minutes
+ExecStart=/bin/bash -c '\
+  MOUNT=@LIBRARY@; MOUNT="${MEMORYVAULT_VAULT_MOUNT:-/mnt/vault}"; \
+  if mountpoint -q "$MOUNT"; then \
+    last=$(find "$MOUNT" -maxdepth 2 -amin -30 -print -quit 2>/dev/null); \
+    if [ -z "$last" ]; then \
+      umount "$MOUNT" && cryptsetup close memoryvault && \
+      echo "vault auto-closed (idle >30m)"; \
+    fi; \
+  fi'

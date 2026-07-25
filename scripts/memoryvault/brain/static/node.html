@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Constellation — category</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden;
+    background: radial-gradient(ellipse at 50% 40%, #061020 0%, #010409 72%);
+    color: #dfeefa; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { position: fixed; inset: 0; }
+  header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 5;
+    display: flex; align-items: center; gap: 0.8rem; padding: 0.7rem 1rem;
+    background: linear-gradient(#0a0c14dd, transparent); pointer-events: none;
+  }
+  header a, header span.t { pointer-events: auto; }
+  header a { color: #8fd4ff; text-decoration: none; font-size: 0.85rem;
+    background: #10243a; border: 1px solid #23507a; border-radius: 999px;
+    padding: 0.3rem 0.9rem; }
+  header .t { font-weight: 600; font-size: 1rem; }
+  header .n { color: #5f7d95; font-size: 0.78rem; }
+
+  #lb { position: fixed; inset: 0; z-index: 20; background: #010409f8;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #lb.hidden { display: none; }
+  #lbImg { max-width: 100vw; max-height: calc(100vh - 7.5rem); object-fit: contain; }
+  #lbChips { position: absolute; bottom: 2.6rem; left: 0; right: 0;
+    display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: center;
+    padding: 0 1rem; }
+  #lbChips b { font-weight: 500; font-size: 0.76rem; background: #10243acc;
+    border: 1px solid #23507a; color: #bfe4ff; cursor: pointer;
+    padding: 0.2rem 0.65rem; border-radius: 999px; }
+  #lbBar { position: absolute; bottom: 0.5rem; left: 0; right: 0;
+    text-align: center; font-size: 0.8rem; color: #9fc0d8; }
+  .nav { position: absolute; top: 0; bottom: 0; width: 30%; cursor: pointer;
+    display: flex; align-items: center; color: #ffffff22; font-size: 2.4rem;
+    user-select: none; z-index: 21; }
+  #prev { left: 0; padding-left: 0.5rem; }
+  #next { right: 0; justify-content: flex-end; padding-right: 0.5rem; }
+  #show { position: fixed; inset: 0; z-index: 18; background: #010409; }
+  #show.hidden { display: none; }
+  #show img { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; opacity: 0; transition: opacity 1.4s ease; }
+  #show img.on { opacity: 1; }
+  #showBar { position: absolute; bottom: 0.8rem; left: 0; right: 0;
+    text-align: center; font-size: 0.85rem; color: #9fc0d8;
+    text-shadow: 0 1px 4px #000; }
+  #lbClose { position: absolute; top: 0.7rem; right: 0.8rem; z-index: 22;
+    background: #10243acc; color: #bfe4ff; border: 1px solid #23507a;
+    border-radius: 999px; width: 2.3rem; height: 2.3rem; cursor: pointer; }
+  #lbRemove, #showRemove { position: absolute; top: 0.7rem; left: 0.8rem;
+    z-index: 22; background: #2a1015cc; color: #ffb4b4;
+    border: 1px solid #7a2330; border-radius: 999px;
+    width: 2.3rem; height: 2.3rem; cursor: pointer; }
+  #lbShare { position: absolute; top: 3.4rem; left: 0.8rem; z-index: 22;
+    background: #0c4a6ecc; color: #bae6fd; border: 1px solid #0369a1;
+    border-radius: 999px; width: 2.3rem; height: 2.3rem; cursor: pointer; }
+  #lb.zoomed .nav { pointer-events: none; }
+  #lb.zoomed { touch-action: none; }
+  #lbImg { transition: none; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<header>
+  <a href="/">← constellation</a>
+  <span class="t" id="title">…</span>
+  <span class="n" id="count"></span>
+  <a id="galleryLink" href="/gallery">gallery view</a>
+  <a id="showBtn" href="#">▶ slideshow</a>
+</header>
+
+<div id="show" class="hidden">
+  <img id="showA" alt="">
+  <img id="showB" alt="">
+  <button id="showRemove" title="remove from display (restorable)">🗑</button>
+  <div id="showBar"></div>
+</div>
+
+<div id="lb" class="hidden">
+  <button id="lbClose">✕</button>
+  <button id="lbRemove" title="remove from display (restorable)">🗑</button>
+  <button id="lbShare" title="email this photo">📤</button>
+  <div class="nav" id="prev">‹</div>
+  <img id="lbImg" alt="">
+  <div class="nav" id="next">›</div>
+  <div id="lbChips"></div>
+  <div id="lbBar"></div>
+</div>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const DIM = qs.get("dim"), VALUE = qs.get("value");
+const FAMILY = qs.get("family") === "1";
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+let W, H, DPR;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 3);
+  W = document.documentElement.clientWidth;
+  H = document.documentElement.clientHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  cv.style.cssText = `position:fixed;left:0;top:0;width:${W}px;height:${H}px;`;
+  layout();
+}
+addEventListener("resize", resize);
+
+const DIM_COLORS = { people: "#ffd27a", pets: "#ffb36b", occasion: "#ff5fa8",
+  milestone: "#ff5fa8", emotion: "#b78bff", sentiment: "#b78bff",
+  location: "#49c6ff", activity: "#5ef2c4", season_holiday: "#ff8d66",
+  time_of_day: "#7fd4ff", place: "#8fe08a", year: "#9db4d0",
+  curation: "#8a8a99" };
+const col = (d) => FAMILY && !d ? "#ffe9b8" : (DIM_COLORS[d] || "#49c6ff");
+
+let photos = [], total = 0, related = [], tick = 0, cur = -1;
+const imgs = new Map();          // LRU thumb cache — bounded for big categories
+const IMG_CACHE = 240;
+
+function img(url) {
+  if (imgs.has(url)) {
+    const v = imgs.get(url);
+    imgs.delete(url); imgs.set(url, v);   // refresh LRU position
+    return v;
+  }
+  const im = new Image();
+  im.src = url;
+  imgs.set(url, im);
+  if (imgs.size > IMG_CACHE) imgs.delete(imgs.keys().next().value);
+  return im;
+}
+
+/* orbital galaxy: EVERY photo orbits the sun. Inner orbits sweep faster
+   (Kepler-flavored); each star has a prominence cycle — most of the time
+   a glowing mote, periodically drifting forward, swelling, and showing
+   its photo before receding. */
+function seedOrbit(p, i, n) {
+  const maxR = Math.min(W, H) / 2 - 70;
+  const f = Math.sqrt((i + 0.75) / Math.max(n, 24));
+  p.orbR = (0.14 + 0.64 * f) * maxR;
+  p.ang = i * 2.39996;
+  p.speed = 0.0022 / Math.pow(0.2 + f, 1.4);
+  p.promT = Math.random() * Math.PI * 2;         // prominence phase
+  p.promW = 0.00005 + Math.random() * 0.0001;    // near-still churn
+  p.size = 2;
+}
+
+function layout() {
+  const n = Math.max(photos.length, 24);
+  photos.forEach((p, i) => seedOrbit(p, i, n));
+  const cx = W / 2, cy = (52 + H) / 2;
+  const maxR = Math.min(W, H) / 2 - 70;
+  related.forEach((c, i) => {
+    const th = (i / Math.max(related.length, 1)) * Math.PI * 2 - Math.PI / 2;
+    c.x = cx + Math.cos(th) * maxR * 1.0;
+    c.y = cy + Math.sin(th) * maxR * 0.96;
+    c.r = 17;
+  });
+}
+
+function drawStar(x, y, r, image, ringColor, alpha) {
+  if (!isFinite(x) || !isFinite(y) || !isFinite(r)) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const g = ctx.createRadialGradient(x, y, r * 0.3, x, y, r * 2);
+  g.addColorStop(0, ringColor + "55");
+  g.addColorStop(1, "transparent");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(x, y, r * 2, 0, Math.PI * 2); ctx.fill();
+  if (image && image.naturalWidth) {
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+    const iw = image.naturalWidth, ih = image.naturalHeight;
+    const sq = Math.min(iw, ih);
+    ctx.drawImage(image, (iw - sq) / 2, (ih - sq) / 2, sq, sq,
+                  x - r, y - r, r * 2, r * 2);
+    ctx.restore(); ctx.save();
+    ctx.globalAlpha = alpha;
+  }
+  ctx.strokeStyle = ringColor;
+  ctx.lineWidth = Math.max(1, r * 0.08);
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+const featured = [];
+function draw() {
+  tick++;
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = (52 + H) / 2;
+  const color = col(DIM);
+
+  // spokes to related categories
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (const c of related) {
+    if (!isFinite(c.x)) continue;
+    ctx.strokeStyle = col(c.dim);
+    ctx.globalAlpha = 0.18 + 0.08 * Math.sin(tick * 0.02 + c.x);
+    ctx.lineWidth = 1 + (c.w || 0.4) * 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    const mx = (cx + c.x) / 2 + (cy - c.y) * 0.15;
+    const my = (cy + c.y) / 2 + (c.x - cx) * 0.15;
+    ctx.quadraticCurveTo(mx, my, c.x, c.y);
+    ctx.stroke();
+  }
+
+  // every photo: orbiting motes; prominent ones swell and show themselves
+  featured.length = 0;
+  ctx.fillStyle = color;
+  for (const p of photos) {
+    p.ang += p.speed;
+    p.promT += p.promW;
+    const prom = Math.max(0, Math.sin(p.promT));       // 0..1 cycle
+    const boost = prom > 0.82 ? (prom - 0.82) / 0.18 : 0;
+    p.x = cx + Math.cos(p.ang) * p.orbR;
+    p.y = cy + Math.sin(p.ang) * p.orbR;
+    const target = 2 + boost * 34;
+    p.size += (target - p.size) * 0.02;
+    // continuous mote<->photo crossfade: no hard swap anywhere
+    p.imgA = Math.max(0, Math.min(1, (p.size - 5) / 14));
+    if (p.imgA > 0.02) featured.push(p);
+    const moteA = (1 - p.imgA) * (0.5 + prom * 0.4);
+    if (moteA > 0.02) {
+      ctx.globalAlpha = moteA;
+      ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2,
+                   Math.min(p.size, 5), Math.min(p.size, 5));
+    }
+  }
+  // web among the currently-shining stars
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 0.6;
+  for (let i = 0; i < featured.length; i++) {
+    const a = featured[i], b = featured[(i + 1) % featured.length];
+    if (!b || featured.length < 3) break;
+    ctx.globalAlpha = 0.1;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.restore();
+
+  // no hard cap cutoff: stars ranked past 60 fade out smoothly by rank
+  featured.sort((a, b) => b.size - a.size);
+  featured.forEach((p, rank) => {
+    const capFade = rank < 60 ? 1 : Math.max(0, 1 - (rank - 60) / 20);
+    const a = 0.97 * p.imgA * capFade;
+    if (a > 0.02) drawStar(p.x, p.y, p.size, img(p.thumb), color, a);
+  });
+
+  for (const c of related) {
+    if (!isFinite(c.x)) continue;
+    drawStar(c.x, c.y, c.r, c.photo ? img(c.photo) : null, col(c.dim), 0.9);
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.textAlign = "center";
+    const t = `${c.value.toUpperCase()} ${c.w2 || ""}`;
+    const tw = ctx.measureText(t).width;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "#0a1f32aa";
+    ctx.fillRect(c.x - tw / 2 - 4, c.y + c.r + 6, tw + 8, 15);
+    ctx.fillStyle = "#cfe8fa";
+    ctx.fillText(t, c.x, c.y + c.r + 17);
+    ctx.globalAlpha = 1;
+  }
+  requestAnimationFrame(draw);
+}
+
+cv.addEventListener("pointerdown", () => { if (cycling) stopCycle(); });
+cv.addEventListener("click", (e) => {
+  for (const c of related) {
+    if (Math.hypot(e.clientX - c.x, e.clientY - c.y) < Math.max(c.r * 1.6, 24)) {
+      location.href = `/node?dim=${encodeURIComponent(c.dim)}&value=${encodeURIComponent(c.value)}`;
+      return;
+    }
+  }
+  // prefer the shining stars, then any nearby mote
+  let best = null, bestD = 1e9;
+  for (const p of featured) {
+    const d = Math.hypot(e.clientX - p.x, e.clientY - p.y);
+    if (d < Math.max(p.size * 1.4, 22) && d < bestD) { best = p; bestD = d; }
+  }
+  if (!best) {
+    for (const p of photos) {
+      const d = Math.hypot(e.clientX - p.x, e.clientY - p.y);
+      if (d < 14 && d < bestD) { best = p; bestD = d; }
+    }
+  }
+  if (best) open(photos.indexOf(best));
+});
+
+/* full-screen click-through across the WHOLE category */
+async function ensure(i) {
+  while (i >= photos.length && photos.length < total) {
+    const url = FAMILY
+      ? `/api/gallery?offset=${photos.length}&limit=120`
+      : `/api/category?dim=${encodeURIComponent(DIM)}&value=${encodeURIComponent(VALUE)}&offset=${photos.length}`;
+    const d = await (await fetch(url)).json();
+    photos.push(...(d.photos || []));
+    if (!(d.photos || []).length) break;
+  }
+}
+
+/* photo zoom: wheel / pinch to zoom (1-6x), drag to pan, double-tap
+   toggles, resets per photo. Swipe-nav only fires at 1x. */
+function makeZoomable(imgEl, host) {
+  let sc = 1, tx = 0, ty = 0;
+  const zptrs = new Map();
+  let zPinchD = null, zPan = null, lastTap = 0;
+  function apply() {
+    imgEl.style.transform = `translate(${tx}px, ${ty}px) scale(${sc})`;
+    imgEl.style.transformOrigin = "center center";
+    host.classList.toggle("zoomed", sc > 1.01);
+  }
+  function reset() { sc = 1; tx = 0; ty = 0; apply(); }
+  function zoomAt(cx, cy, factor) {
+    const ns = Math.max(1, Math.min(6, sc * factor));
+    const k = ns / sc;
+    tx = cx + (tx - cx) * k - (cx - innerWidth / 2) * (k - 1) * 0;
+    tx = (tx - (cx - innerWidth / 2)) * k + (cx - innerWidth / 2);
+    ty = (ty - (cy - innerHeight / 2)) * k + (cy - innerHeight / 2);
+    sc = ns;
+    if (sc <= 1.01) { tx = 0; ty = 0; }
+    apply();
+  }
+  host.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0018));
+  }, { passive: false });
+  host.addEventListener("pointerdown", (e) => {
+    zptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (zptrs.size === 2) zPinchD = null;
+    else if (sc > 1.01) zPan = { x: e.clientX, y: e.clientY };
+  });
+  host.addEventListener("pointermove", (e) => {
+    if (zptrs.has(e.pointerId)) zptrs.set(e.pointerId, [e.clientX, e.clientY]);
+    if (zptrs.size === 2) {
+      const [p1, p2] = [...zptrs.values()];
+      const d = Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
+      if (zPinchD) zoomAt((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, d / zPinchD);
+      zPinchD = d;
+    } else if (zPan) {
+      tx += e.clientX - zPan.x; ty += e.clientY - zPan.y;
+      zPan = { x: e.clientX, y: e.clientY };
+      apply();
+    }
+  });
+  const up = (e) => {
+    zptrs.delete(e.pointerId);
+    if (zptrs.size < 2) zPinchD = null;
+    zPan = null;
+  };
+  host.addEventListener("pointerup", up);
+  host.addEventListener("pointercancel", up);
+  imgEl.addEventListener("click", (e) => {
+    const now = performance.now();
+    if (now - lastTap < 350) {
+      if (sc > 1.01) reset();
+      else zoomAt(e.clientX, e.clientY, 2.6);
+    }
+    lastTap = now;
+  });
+  return { reset, zoomed: () => sc > 1.01 };
+}
+
+const zoomCtl = makeZoomable(document.getElementById("lbImg"), document.getElementById("lb"));
+
+async function open(i) {
+  await ensure(i);
+  if (i < 0 || i >= photos.length) return;
+  cur = i;
+  const p = photos[i];
+  zoomCtl.reset();
+  const el = document.getElementById("lbImg");
+  el.src = p.thumb;
+  el.src = p.display || p.thumb;
+  document.getElementById("lbBar").textContent =
+    `${i + 1} / ${total}` + (p.taken_at ? " · " + new Date(p.taken_at).toDateString() : "");
+  document.getElementById("lb").classList.remove("hidden");
+  ensure(i + 3);
+  // the photo's own categories as navigation chips
+  const chips = document.getElementById("lbChips");
+  chips.innerHTML = "";
+  try {
+    const d = await (await fetch(`/api/photo?id=${p.id}`)).json();
+    for (const [dim, values] of Object.entries(d.tags || {})) {
+      if (dim === "curation" || dim === "curation_reason") continue;
+      for (const v of values) {
+        if (["None", "Unknown"].includes(v)) continue;
+        const b = document.createElement("b");
+        b.textContent = v;
+        b.style.borderColor = DIM_COLORS[dim] || "#23507a";
+        b.addEventListener("click", () =>
+          location.href = `/node?dim=${encodeURIComponent(dim)}&value=${encodeURIComponent(v)}`);
+        chips.appendChild(b);
+      }
+    }
+  } catch (e) {}
+}
+const close = () => { document.getElementById("lb").classList.add("hidden"); cur = -1; };
+document.getElementById("lbClose").addEventListener("click", close);
+function removeFromSet(id) {
+  const i = photos.findIndex((p) => p && p.id === id);
+  if (i < 0) return;
+  imgs.delete(photos[i].thumb);
+  photos.splice(i, 1);
+  total = Math.max(0, total - 1);
+  if (cur > i) cur -= 1;
+  reshuffle();                      // deck indices shifted
+  document.getElementById("count").textContent = `${total.toLocaleString()} memories`;
+  layout();
+}
+document.getElementById("lbShare").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  if (cur < 0) return;
+  const last = localStorage.getItem("shareEmail") || "";
+  const to = prompt("Email this photo to:", last);
+  if (!to) return;
+  localStorage.setItem("shareEmail", to.trim());
+  const p = photos[cur];
+  const r = await fetch(
+    `/api/photo/share?id=${p.id}&to=${encodeURIComponent(to.trim())}`)
+    .catch(() => null);
+  if (r && r.ok) document.getElementById("lbBar").textContent = `sent to ${to.trim()} ✓`;
+  else if (r && r.status === 503)
+    alert("Email isn't configured yet — the sending address needs its app password added on the VM.");
+  else alert("Send failed — check the address and try again.");
+});
+document.getElementById("lbRemove").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  if (cur < 0) return;
+  const p = photos[cur];
+  if (!confirm("Remove this photo from the display? (Moves to the restorable Removed bin — nothing is deleted.)")) return;
+  try { await fetch(`/api/photo/remove?id=${p.id}`); } catch (err) {}
+  const at = cur;
+  removeFromSet(p.id);
+  if (!photos.length) { close(); return; }
+  open(Math.min(at, photos.length - 1));
+});
+document.getElementById("prev").addEventListener("click", () => open(cur - 1));
+document.getElementById("next").addEventListener("click", () => open(cur + 1));
+addEventListener("keydown", (e) => {
+  if (cur < 0) return;
+  if (e.key === "Escape") close();
+  if (e.key === "ArrowLeft") open(cur - 1);
+  if (e.key === "ArrowRight") open(cur + 1);
+});
+let tx = null;
+document.getElementById("lb").addEventListener("touchstart",
+  (e) => { tx = e.touches[0].clientX; }, { passive: true });
+document.getElementById("lb").addEventListener("touchend", (e) => {
+  if (tx === null || cur < 0) return;
+  const dx = e.changedTouches[0].clientX - tx; tx = null;
+  if (zoomCtl.zoomed()) { } else if (dx > 50) open(cur - 1); else if (dx < -50) open(cur + 1);
+}, { passive: true });
+
+/* kiosk cycle: 5 min slideshow -> 1 min living network -> new batch.
+   A shuffled deck walks the WHOLE category before any photo repeats. */
+const SLIDE_MS = 8000, SHOW_MS = 5 * 60 * 1000, NET_MS = 60 * 1000;
+let cycling = false, showTimer = null, phaseTimer = null;
+let deck = [], deckPos = 0, showOnA = true, curShowP = null;
+
+document.getElementById("showRemove").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const p = curShowP;
+  if (!p) return;
+  curShowP = null;
+  try { await fetch(`/api/photo/remove?id=${p.id}`); } catch (err) {}
+  removeFromSet(p.id);
+  document.getElementById("showBar").textContent = "removed — restorable in curation";
+  nextSlide();
+});
+
+function reshuffle() {
+  deck = photos.map((_, i) => i);
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  deckPos = 0;
+}
+
+async function nextSlide() {
+  if (!cycling) return;
+  if (deckPos >= deck.length) reshuffle();
+  if (!deck.length) return;
+  const p = photos[deck[deckPos++]];
+  if (!p) return;
+  curShowP = p;
+  const el = document.getElementById(showOnA ? "showA" : "showB");
+  const other = document.getElementById(showOnA ? "showB" : "showA");
+  showOnA = !showOnA;
+  await new Promise((res) => {
+    const im = new Image();
+    im.onload = im.onerror = res;
+    im.src = p.display || p.thumb;
+  });
+  if (!cycling) return;
+  el.src = p.display || p.thumb;
+  el.classList.add("on");
+  other.classList.remove("on");
+  document.getElementById("showBar").textContent =
+    (p.taken_at ? new Date(p.taken_at).toDateString() : "") +
+    `  ·  ${VALUE || "Our Family"}`;
+}
+
+function netPhase() {
+  if (!cycling) return;
+  clearInterval(showTimer);
+  document.getElementById("show").classList.add("hidden");     // the network
+  phaseTimer = setTimeout(slidePhase, NET_MS);                 // ...for 1 min
+}
+
+function slidePhase() {
+  if (!cycling) return;
+  reshuffle();   // every show phase starts with a fresh random order,
+                 // picking up any photos that streamed in since the last one
+  document.getElementById("show").classList.remove("hidden");  // the show
+  nextSlide();
+  showTimer = setInterval(nextSlide, SLIDE_MS);
+  phaseTimer = setTimeout(netPhase, SHOW_MS);                  // ...for 5 min
+}
+
+function stopCycle() {
+  cycling = false;
+  clearInterval(showTimer); clearTimeout(phaseTimer);
+  document.getElementById("show").classList.add("hidden");
+  document.getElementById("showBtn").textContent = "▶ slideshow";
+}
+
+document.getElementById("showBtn").addEventListener("click", (e) => {
+  e.preventDefault();
+  if (cycling) { stopCycle(); return; }
+  cycling = true;
+  document.getElementById("showBtn").textContent = "⏹ stop";
+  if (!deck.length) reshuffle();
+  slidePhase();        // manual start = show NOW; auto-kiosk opens on the network
+});
+document.getElementById("show").addEventListener("click", stopCycle);
+
+(async function boot() {
+  resize();
+  draw();
+  if (FAMILY) {
+    document.getElementById("title").textContent = "🌞 Our Family";
+    document.getElementById("galleryLink").href = "/gallery";
+    const f = await (await fetch("/api/family")).json();
+    total = f.total;
+    document.getElementById("count").textContent = `${f.total.toLocaleString()} memories`;
+    const g = await (await fetch("/api/gallery?limit=200&order=random")).json();
+    photos = g.photos;
+    related = f.people.map((p, i) => ({
+      dim: "people", value: p.name, w: 0.6, w2: p.count }));
+  } else {
+    document.getElementById("title").textContent = VALUE;
+    document.getElementById("galleryLink").href =
+      `/gallery?search=${encodeURIComponent(VALUE)}`;
+    const d = await (await fetch(
+      `/api/category?dim=${encodeURIComponent(DIM)}&value=${encodeURIComponent(VALUE)}`)).json();
+    total = d.count;
+    photos = d.photos;
+    document.getElementById("count").textContent =
+      `${d.count.toLocaleString()} memories · ${DIM.replace(/_/g, " ")}`;
+    // the related-categories graph can be slow on a big library — fetch it
+    // WITHOUT blocking the galaxy; the outer ring materializes when ready
+    fetch("/api/categories?top=60").then((r) => r.json()).then((all) => {
+      const key = `${DIM}:${VALUE}`;
+      related = all.edges
+        .filter((e) => e.a === key || e.b === key)
+        .map((e) => {
+          const ok = e.a === key ? e.b : e.a;
+          const n = all.nodes.find((x) => x.key === ok);
+          return n ? { dim: n.dim, value: n.value,
+                       w: Math.min(1, e.weight / 500), w2: e.weight } : null;
+        }).filter(Boolean).slice(0, 14);
+      layout();
+      for (const c of related) {
+        fetch(`/api/catphoto?dim=${encodeURIComponent(c.dim)}&value=${encodeURIComponent(c.value)}`)
+          .then((r) => r.json()).then((d) => { if (d.thumb) c.photo = d.thumb; })
+          .catch(() => {});
+      }
+    }).catch(() => {});
+  }
+  // kiosk by default: the cycle starts on its own; touching the canvas
+  // hands control back to the human
+  if (!cycling) {
+    cycling = true;
+    document.getElementById("showBtn").textContent = "⏹ stop";
+    if (!deck.length) reshuffle();
+    netPhase();
+  }
+  if (FAMILY) {
+    for (const c of related) {
+      fetch(`/api/catphoto?dim=${encodeURIComponent(c.dim)}&value=${encodeURIComponent(c.value)}`)
+        .then((r) => r.json()).then((d) => { if (d.thumb) c.photo = d.thumb; })
+        .catch(() => {});
+    }
+  }
+  layout();
+  // seed against the FINAL total so density is right, then stream in the
+  // rest of the category — every photo joins the orbit as it arrives
+  photos.forEach((p, i) => seedOrbit(p, i, Math.max(total, 24)));
+  (async function loadAll() {
+    while (photos.length < total) {
+      const url = FAMILY
+        ? `/api/gallery?offset=${photos.length}&limit=200`
+        : `/api/category?dim=${encodeURIComponent(DIM)}&value=${encodeURIComponent(VALUE)}&offset=${photos.length}&limit=200`;
+      let d;
+      try { d = await (await fetch(url)).json(); }
+      catch (e) { await new Promise((r) => setTimeout(r, 3000)); continue; }
+      const batch = d.photos || [];
+      if (!batch.length) break;
+      for (const ph of batch) {
+        seedOrbit(ph, photos.length, Math.max(total, 24));
+        photos.push(ph);
+      }
+      document.getElementById("count").textContent =
+        `${photos.length.toLocaleString()} of ${total.toLocaleString()} in orbit`;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    document.getElementById("count").textContent =
+      `all ${total.toLocaleString()} memories in orbit`;
+  })();
+})();
+</script>
+</body>
+</html>
