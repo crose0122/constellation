@@ -99,6 +99,22 @@
 re-passes running on both GPUs.</p>
 <div id="sweeps"></div>
 
+<div id="videoSection" style="display:none">
+  <p class="sub" style="margin:1.4rem 0 0.7rem">🎬 Video processing — clips
+  moving through the pipeline (each stage a subset of the one before).</p>
+  <div class="stage">
+    <div class="head"><span class="name">Ingested (poster frames)</span>
+      <span class="nums" id="vIngNums">–</span></div>
+    <div class="track"><div class="fill" id="vIngFill"></div></div>
+  </div>
+  <div class="stage">
+    <div class="head"><span class="name">Screened + captioned → visible</span>
+      <span class="nums" id="vDoneNums">–</span></div>
+    <div class="track"><div class="fill" id="vDoneFill"></div></div>
+    <div class="pct" id="vDonePct"></div>
+  </div>
+</div>
+
 <div class="tiles">
   <div class="tile"><div class="n" id="tVault">–</div>
     <div class="l"><span class="dot" style="background:var(--warn)"></span>🔒 vaulted (private)</div></div>
@@ -175,6 +191,26 @@ async function refresh() {
     f.style.width = p + "%";
     f.classList.toggle("done", p >= 100);
     el.querySelector(".pct").textContent = p.toFixed(1) + "%";
+  }
+
+  const v = d.videos;
+  if (v && (v.discovered || v.ingested)) {
+    document.getElementById("videoSection").style.display = "";
+    const ingTotal = v.discovered || v.ingested;
+    const ip = pct(v.ingested, ingTotal);
+    document.getElementById("vIngNums").textContent =
+      `${fmt(v.ingested)} / ${fmt(ingTotal)}`;
+    const inf = document.getElementById("vIngFill");
+    inf.style.width = ip + "%"; inf.classList.toggle("done", ip >= 100);
+    // "visible" = ingested videos that are both screened and captioned
+    const done = Math.min(v.screened, v.captioned);
+    const dp = pct(done, v.ingested);
+    document.getElementById("vDoneNums").textContent =
+      `${fmt(done)} / ${fmt(v.ingested)}  ·  ${fmt(v.tagged)} tagged`;
+    const df = document.getElementById("vDoneFill");
+    df.style.width = dp + "%"; df.classList.toggle("done", dp >= 100 && v.ingested > 0);
+    document.getElementById("vDonePct").textContent =
+      `${fmt(v.screened)} screened · ${fmt(v.captioned)} captioned`;
   }
 
   document.getElementById("tVault").textContent = fmt(d.vaulted);

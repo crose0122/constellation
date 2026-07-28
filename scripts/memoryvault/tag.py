@@ -43,7 +43,7 @@ def build_prompt(schema: dict) -> str:
 def build_format(schema: dict) -> dict:
     """JSON-schema for Ollama structured output: every vision dimension is
     required and enum-constrained, so invented values ('With New Pet',
-    'With Uncle Joe', comma-joined combos) are grammatically impossible."""
+    'With Bailey', comma-joined combos) are grammatically impossible."""
     props = {}
     for key, dim in vision_dims(schema).items():
         if dim["type"] == "multi":
@@ -181,8 +181,10 @@ def tag(conn, vision_fn=call_vision, limit: int | None = None,
                     raise
                 time.sleep(wait)
 
+    from .video import representative_image
+
     for i, row in enumerate(rows, 1):
-        path = config.LIBRARY_ROOT / row["library_path"]
+        path = representative_image(row)   # poster frame for videos
         try:
             raw = vision_fn(str(path), prompt, fmt)
 

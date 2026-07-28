@@ -2,8 +2,8 @@
   "version": "2.0",
   "_notes": [
     "v2.0 accuracy pass: the vision model no longer names people (trained face",
-    "recognition is authoritative \u2014 vision cannot know what any one person looks like) and",
-    "no longer guesses the year (EXIF is authoritative). family members are PEOPLE, never a",
+    "recognition is authoritative \u2014 vision cannot know what Alex looks like) and",
+    "no longer guesses the year (EXIF is authoritative). Sam is a PERSON, not a",
     "pet \u2014 he must never appear in the pets dimension. Dimensions with",
     "\"vision\": false are kept for DB/UI compatibility but are excluded from the",
     "vision prompt and ignored if the model returns them. Values are enforced by",
@@ -26,7 +26,7 @@
         "Unknown",
         "None"
       ],
-      "prompt": "(not asked of the vision model \u2014 people tags come from trained face recognition, model_version faces-1.0. Replace the example names with your family's.)"
+      "prompt": "(not asked of the vision model \u2014 people tags come from trained face recognition, model_version faces-1.0)"
     },
     "occasion": {
       "label": "Occasion",
@@ -202,7 +202,7 @@
         "With Other Pet",
         "No Pets"
       ],
-      "prompt": "Pet ANIMALS visible in the photo. Rex is the family dog. With Other Pet for any other animal. No Pets if no animal is visible. Never use this field for people."
+      "prompt": "Pet ANIMALS visible in the photo. Rex is the family dog. With Other Pet for any other animal. No Pets if no animal is visible. IMPORTANT: Sam is a family member (a person), NEVER a pet \u2014 do not use this field for people."
     },
     "humor": {
       "label": "Humor",

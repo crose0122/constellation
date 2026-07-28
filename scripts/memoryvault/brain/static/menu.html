@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Constellation — home</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100%; background:
+      radial-gradient(ellipse at 50% 0%, #0a1830 0%, #010409 60%);
+    color: #dfeefa; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem 1.2rem 3rem; max-width: 940px; margin: 0 auto;
+  }
+  header { text-align: center; margin-bottom: 2rem; }
+  h1 { font-size: 1.6rem; font-weight: 650; letter-spacing: 0.02em; }
+  .tag { color: #5f7d95; font-size: 0.85rem; margin-top: 0.3rem; }
+  h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.12em;
+    color: #5f7d95; margin: 1.6rem 0 0.7rem; font-weight: 600; }
+  .grid { display: grid; gap: 0.8rem;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  a.card {
+    display: block; text-decoration: none; color: inherit;
+    background: #0a1420; border: 1px solid #1c3e60; border-radius: 14px;
+    padding: 1rem 1.1rem; transition: border-color .15s, transform .15s, background .15s;
+  }
+  a.card:hover { border-color: #49c6ff; background: #0e1c2e; transform: translateY(-2px); }
+  .card .i { font-size: 1.5rem; }
+  .card .n { font-weight: 600; font-size: 1rem; margin-top: 0.4rem; }
+  .card .d { color: #7f9bb3; font-size: 0.78rem; margin-top: 0.25rem; line-height: 1.35; }
+  footer { text-align: center; color: #40566a; font-size: 0.72rem; margin-top: 2.4rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌌 Constellation</h1>
+  <div class="tag">our life in images</div>
+</header>
+
+<h2>View</h2>
+<div class="grid">
+  <a class="card" href="/"><div class="i">🌌</div>
+    <div class="n">Constellation</div>
+    <div class="d">The 3D star map of every category — tap a star to explore.</div></a>
+  <a class="card" href="/wall"><div class="i">🖼️</div>
+    <div class="n">The Wall</div>
+    <div class="d">Living gallery wall in ornate gilt frames; videos play in-frame.</div></a>
+  <a class="card" href="/gallery"><div class="i">🔍</div>
+    <div class="n">Gallery</div>
+    <div class="d">Every photo, searchable by people, place, caption, and more.</div></a>
+  <a class="card" href="/memories"><div class="i">💫</div>
+    <div class="n">Memories</div>
+    <div class="d">A slideshow that walks the connections between moments.</div></a>
+</div>
+
+<h2>Manage</h2>
+<div class="grid">
+  <a class="card" href="/progress"><div class="i">📊</div>
+    <div class="n">Pipeline Progress</div>
+    <div class="d">Live ingest / screen / tag bars, quality sweeps, and video processing.</div></a>
+  <a class="card" href="/people"><div class="i">🧑‍🤝‍🧑</div>
+    <div class="n">People</div>
+    <div class="d">Name face clusters; tap a person to prune wrong faces.</div></a>
+  <a class="card" href="/curation"><div class="i">🗂️</div>
+    <div class="n">Curation</div>
+    <div class="d">Triage bins — Trash, Removed, and Marked-for-deletion.</div></a>
+</div>
+
+<footer>Self-hosted · LAN-only · nothing leaves your network</footer>
+</body>
+</html>

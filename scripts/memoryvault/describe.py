@@ -11,6 +11,9 @@ Adds a natural-language layer the tag dimensions can't carry:
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from . import config
 from .db import record_error, start_run, finish_run
 
@@ -41,6 +44,43 @@ FORMAT = {
     },
     "required": ["caption", "text_in_image", "orientation"],
 }
+
+VIDEO_PROMPT = (
+    "These images are frames sampled IN ORDER from a single short home video. "
+    "Treat them as one clip, not separate photos.\n"
+    '"caption": ONE sentence describing what happens across the video — the '
+    "people (never guess names — 'a boy', 'a woman'), the setting, and any "
+    "action or change over the clip. Concrete beats generic.\n"
+    '"text_in_image": any readable text seen in any frame, verbatim; empty '
+    "string if none."
+)
+
+VIDEO_FORMAT = {
+    "type": "object",
+    "properties": {"caption": {"type": "string"},
+                   "text_in_image": {"type": "string"}},
+    "required": ["caption", "text_in_image"],
+}
+
+
+def caption_video(frames) -> dict:
+    """One qwen call over several ordered frames → a caption that spans the
+    clip (cheap pseudo-temporal understanding). Same model, more images."""
+    import requests
+
+    from .tag import model_image_b64
+    imgs = [model_image_b64(str(f)) for f in frames]
+    resp = requests.post(config.OLLAMA_URL, json={
+        "model": config.VISION_MODEL, "prompt": VIDEO_PROMPT,
+        "images": imgs, "stream": False, "format": VIDEO_FORMAT},
+        timeout=180)
+    resp.raise_for_status()
+    text = resp.json().get("response", "")
+    if "```" in text:
+        text = (text.split("```json")[-1].split("```")[0]
+                if "```json" in text else text.split("```")[1])
+    return json.loads(text.strip())
+
 
 _TRANSPOSE = {
     "rotate_90_clockwise_to_fix": "ROTATE_270",   # PIL rotates CCW
@@ -88,7 +128,7 @@ def describe(conn, shard: str | None = None, limit: int | None = None) -> dict:
     run = start_run(conn, "describe")
 
     sql = (
-        "SELECT id, sha256, library_path FROM photos "
+        "SELECT id, sha256, media_kind, library_path FROM photos "
         "WHERE status IN ('screened','tagged','noted') "
         "AND library_path IS NOT NULL "
         "AND id NOT IN (SELECT photo_id FROM descriptions) "
@@ -104,15 +144,31 @@ def describe(conn, shard: str | None = None, limit: int | None = None) -> dict:
     rows = conn.execute(sql).fetchall()
     stats = {"described": 0, "with_text": 0, "rotated": 0, "errors": 0}
 
+    from . import video as vid
+    from .video import representative_image
+
     for i, row in enumerate(rows, 1):
         try:
-            raw = call_vision(
-                str(config.LIBRARY_ROOT / row["library_path"]), PROMPT, FORMAT)
+            is_video = row["media_kind"] == "video"
+            if is_video:
+                # multi-frame: caption what happens ACROSS the clip, one call
+                frames = vid.caption_frames(
+                    str(config.LIBRARY_ROOT / row["library_path"]),
+                    row["sha256"], row["duration"] if "duration" in row.keys() else None)
+                if not frames:
+                    frames = [Path(representative_image(row))]
+                try:
+                    raw = caption_video(frames)
+                finally:
+                    vid.cleanup_frames(frames)
+                orientation = "upright"   # never re-orient a video
+            else:
+                raw = call_vision(representative_image(row), PROMPT, FORMAT)
+                orientation = raw.get("orientation", "upright")
+                if orientation not in FORMAT["properties"]["orientation"]["enum"]:
+                    orientation = "upright"
             caption = str(raw.get("caption", "")).strip()
             ocr = str(raw.get("text_in_image", "")).strip()
-            orientation = raw.get("orientation", "upright")
-            if orientation not in FORMAT["properties"]["orientation"]["enum"]:
-                orientation = "upright"
             conn.execute(
                 "INSERT OR REPLACE INTO descriptions "
                 "(photo_id, caption, ocr_text, orientation, model_version) "

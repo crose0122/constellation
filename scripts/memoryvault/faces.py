@@ -12,6 +12,7 @@ CLI:  mvault faces scan      (detect+embed new photos; resumable)
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -75,7 +76,7 @@ def scan(conn, limit: int | None = None) -> dict:
 
     ensure_schema(conn)
     sql = (
-        "SELECT id, library_path FROM photos "
+        "SELECT id, sha256, media_kind, library_path FROM photos "
         "WHERE status IN ('screened','tagged','noted') AND faces_scanned = 0 "
         "AND library_path IS NOT NULL AND id NOT IN "
         " (SELECT photo_id FROM tags WHERE dimension = 'curation' "
@@ -85,9 +86,11 @@ def scan(conn, limit: int | None = None) -> dict:
         sql += f" LIMIT {int(limit)}"
     rows = conn.execute(sql).fetchall()
     app = _analyzer()
+    from .video import representative_image
+
     stats = {"scanned": 0, "faces": 0, "errors": 0}
     for i, row in enumerate(rows, 1):
-        path = config.LIBRARY_ROOT / row["library_path"]
+        path = Path(representative_image(row))   # poster frame for videos
         try:
             img = cv2.imread(str(path))
             if img is None:

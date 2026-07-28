@@ -131,7 +131,7 @@ async function load() {
     };
     const vaultBtn = actBtn("tovault", "Move to Personal Vault", () => {
       // first tap reveals the destination choice
-      const a = actBtn("tovault", "→ Partner's folder", () => doVault("partner"));
+      const a = actBtn("tovault", "→ Casey's folder", () => doVault("casey"));
       const b = actBtn("tovault", "→ Other", () => doVault("other"));
       vaultBtn.replaceWith(a, b);
     });

@@ -18,20 +18,19 @@ DB_PATH = _path("MEMORYVAULT_DB_PATH", str(LIBRARY_ROOT / "photos.db"))
 
 # LUKS vault
 VAULT_IMG = _path("MEMORYVAULT_VAULT_IMG", str(LIBRARY_ROOT / "vault.img"))
-VAULT_MOUNT = _path("MEMORYVAULT_VAULT_MOUNT", "/mnt/vault")
-# "luks" (default): flagged content lives in an encrypted LUKS image that
-# a human unlocks. "dir": VAULT_MOUNT is a plain directory treated as
-# always-available — for containers/NAS where the HOST disk is already
-# encrypted. Never use "dir" on an unencrypted volume.
+VAULT_MOUNT = _path("MEMORYVAULT_VAULT_MOUNT", "~/Constellation/vault")
+# "luks" (default, Linux): flagged content lives in an encrypted LUKS image a
+# human unlocks. "dir": VAULT_MOUNT is a plain directory treated as always-
+# available — for Windows/containers where the HOST disk is already encrypted.
 VAULT_MODE = os.environ.get("MEMORYVAULT_VAULT_MODE", "luks")
 
-# Inference (RecRoomRig GPU host)
+# Inference (local Ollama by default)
 OLLAMA_URL = os.environ.get(
-    "MEMORYVAULT_OLLAMA_URL", "http://localhost:11434/api/generate"
+    "MEMORYVAULT_OLLAMA_URL", "http://127.0.0.1:11434/api/generate"
 )
 # 7b: the 3b emits degenerate '?' streams on image+prompt under ollama >= 0.31
 # (grammar stack exception with format=json); 7b is stable and was the target
-# model anyway once GPU headroom allowed (SPEC §7). RTX 3070 8GB handles it.
+# model anyway once GPU headroom allowed (SPEC §7). Needs ~7-8GB VRAM.
 VISION_MODEL = os.environ.get("MEMORYVAULT_VISION_MODEL", "qwen2.5vl:7b")
 # Local weights dir for the pass-1 NSFW classifier (downloaded once, offline after)
 NSFW_MODEL_PATH = os.environ.get("MEMORYVAULT_NSFW_MODEL_PATH", "")
@@ -47,7 +46,7 @@ SCREEN_T_HIGH = float(os.environ.get("MEMORYVAULT_SCREEN_T_HIGH", "0.85"))
 NEAR_DUP_THRESHOLD = int(os.environ.get("MEMORYVAULT_NEAR_DUP_THRESHOLD", "10"))
 
 # Email sharing (the Brain's per-photo share button). Credentials live in an
-# EnvironmentFile on the VM (~/.memoryvault-smtp.env), never in the repo.
+# environment file / your host config, never in the repo.
 SMTP_HOST = os.environ.get("MEMORYVAULT_SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("MEMORYVAULT_SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("MEMORYVAULT_SMTP_USER", "")

@@ -1,8 +1,8 @@
 """LUKS vault helpers (SPEC.md §6).
 
 The passphrase is never stored, logged, read from config, or passed as an
-argument — cryptsetup prompts for it interactively, and only the two
-vault keyholders know it. Nothing in this module (or anywhere else) writes any
+argument — cryptsetup prompts for it interactively, and only Elliot and
+Casey know it. Nothing in this module (or anywhere else) writes any
 reference to a vaulted item outside the container.
 """
 
@@ -23,18 +23,20 @@ class VaultUnavailable(Exception):
 
 def is_mounted() -> bool:
     if config.VAULT_MODE == "dir":
-        # a bind-mounted host directory is the vault; ensure it exists
+        # a plain directory is the vault (Windows/container: no LUKS). Ensure
+        # it and its subfolders exist and are writable.
         config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
-        for sub in ("", "review", "partner", "other"):
+        for sub in ("", "review", "casey", "other"):
             (config.VAULT_MOUNT / sub).mkdir(exist_ok=True)
         return os.access(config.VAULT_MOUNT, os.W_OK)
     return os.path.ismount(config.VAULT_MOUNT)
 
 
 def open_vault():
-    """Interactive: cryptsetup prompts for the passphrase on the terminal."""
+    """Interactive: cryptsetup prompts for the passphrase on the terminal.
+    In "dir" mode there's nothing to unlock — the folder is the vault."""
     if config.VAULT_MODE == "dir":
-        is_mounted()  # just ensures the directory + subdirs exist
+        is_mounted()  # just ensures the directory + subfolders exist
         return
     config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -51,7 +53,7 @@ def open_vault():
         ["sudo", "chown", f"{os.getenv('USER', 'root')}:", str(config.VAULT_MOUNT)],
         check=True,
     )
-    for sub in ("", "review", "partner", "other"):
+    for sub in ("", "review", "casey", "other"):
         (config.VAULT_MOUNT / sub).mkdir(exist_ok=True)
 
 
@@ -170,14 +172,14 @@ def keep_in_vault(filename: str) -> dict:
 def route_to_vault(conn, photo_id: int, review: bool, dest: str | None = None):
     """Move a flagged photo into the mounted vault and scrub every trace of it
     from the database (SPEC.md invariant #3). Only aggregate counters remain.
-    dest picks a vault subfolder ('partner'/'other') for user-initiated moves."""
+    dest picks a vault subfolder ('casey'/'other') for user-initiated moves."""
     if not is_mounted():
         raise VaultUnavailable(f"vault not mounted at {config.VAULT_MOUNT}")
 
     row = conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
     if row is None:
         return
-    sub = "review" if review else (dest if dest in ("partner", "other") else "")
+    sub = "review" if review else (dest if dest in ("casey", "other") else "")
     dest_dir = config.VAULT_MOUNT / sub
     dest_dir.mkdir(exist_ok=True)
 

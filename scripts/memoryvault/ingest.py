@@ -121,6 +121,9 @@ def ingest_one(conn, file_row) -> str:
         )
         return "duplicate"
 
+    if file_row["media_kind"] == "video":
+        return _ingest_video(conn, file_row, src, sha)
+
     staging = config.LIBRARY_ROOT / "staging"
     staging.mkdir(parents=True, exist_ok=True)
     staged = staging / f"{sha[:16]}-{src.name}"
@@ -157,12 +160,52 @@ def ingest_one(conn, file_row) -> str:
     return "canonical"
 
 
+def _ingest_video(conn, file_row, src: Path, sha: str) -> str:
+    """A video becomes a photos row (media_kind='video') with a poster frame
+    as its display rendition + thumbnail. The original is copied into the
+    library like a photo; downstream stages read the poster via
+    video.representative_image()."""
+    from . import video as vid
+
+    dest = library_dest(sha, src, None)  # refined below once we know taken_at
+    meta = vid.probe(str(src))
+    if meta["taken_at"]:
+        dest = library_dest(sha, src, meta["taken_at"])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+    poster = vid.make_poster(str(dest), sha, meta["duration"])
+    if poster is None:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("poster-frame extraction failed (ffmpeg?)")
+    # thumbnail from the poster (same 512px treatment photos get)
+    with Image.open(poster) as pim:
+        make_thumbnail(pim, sha)
+
+    cur = conn.execute(
+        "INSERT INTO photos(sha256, phash, width, height, taken_at, camera, "
+        "gps_lat, gps_lon, media_kind, status, library_path, duration, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?, 'video', 'staged', ?, ?, ?)",
+        (
+            sha, None, meta["width"], meta["height"], meta["taken_at"], None,
+            meta["gps_lat"], meta["gps_lon"],
+            str(dest.relative_to(config.LIBRARY_ROOT)), meta["duration"], now(),
+        ),
+    )
+    conn.execute(
+        "UPDATE files SET photo_id = ?, disposition = 'canonical' WHERE id = ?",
+        (cur.lastrowid, file_row["id"]),
+    )
+    return "canonical"
+
+
 def ingest(conn, limit: int | None = None, sample: bool = False) -> dict:
-    """Ingest all (or a random sample of) discovered photo files."""
+    """Ingest all (or a random sample of) discovered photo AND video files."""
     run = start_run(conn, "ingest")
     order = "ORDER BY RANDOM()" if sample else "ORDER BY id"
     sql = (
-        "SELECT * FROM files WHERE disposition='discovered' AND media_kind='photo' "
+        "SELECT * FROM files WHERE disposition='discovered' "
+        "AND media_kind IN ('photo','video') "
         + order
     )
     if limit:

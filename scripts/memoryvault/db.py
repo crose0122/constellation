@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS photos (
   status        TEXT NOT NULL,
   screen_score  REAL,
   library_path  TEXT,
+  duration      REAL,
   created_at    TEXT NOT NULL
 );
 
@@ -145,12 +146,33 @@ def connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:
 
 def init(db_path: Path) -> sqlite3.Connection:
     conn = connect(db_path)
-    conn.executescript(DDL)
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', ?)",
-        (SCHEMA_VERSION,),
-    )
-    conn.commit()
+    # every mvault command calls this; it must survive a concurrent writer
+    # (nightly pipeline / sweeps) instead of dying on 'database is locked'.
+    import time as _t
+
+    def _setup():
+        conn.executescript(DDL)
+        # additive migrations (CREATE TABLE won't add columns to old DBs)
+        for coldef in ("duration REAL",):
+            try:
+                conn.execute(f"ALTER TABLE photos ADD COLUMN {coldef}")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e):
+                    raise           # a real error (e.g. locked) — let retry see it
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', ?)",
+            (SCHEMA_VERSION,),
+        )
+        conn.commit()
+
+    for a in range(12):
+        try:
+            _setup()
+            break
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or a == 11:
+                raise
+            _t.sleep(5)
     return conn
 
 
