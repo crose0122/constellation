@@ -41,7 +41,7 @@ ipcMain.handle("pickFolder", async (_e, title) => {
 ipcMain.handle("install", async (_e, cfg) => {
   const send = (p) => win && win.webContents.send("progress", p);
   try {
-    await setup.installOllama(send);
+    await setup.installOllama(cfg, send);
     await setup.pullModel(cfg.model, send);
     return { ok: true };
   } catch (e) {

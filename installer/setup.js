@@ -61,11 +61,21 @@ const OLLAMA_URLS = {
   win32: "https://ollama.com/download/OllamaSetup.exe",
   darwin: "https://ollama.com/download/Ollama-darwin.zip",
 };
-async function installOllama(onStatus) {
+function serveEnv(mode) {
+  // honor a CPU override: OLLAMA_NUM_GPU=0 keeps inference off the GPU
+  const e = { ...process.env };
+  if (mode === "cpu") e.OLLAMA_NUM_GPU = "0";
+  return e;
+}
+async function installOllama(cfg, onStatus) {
+  if (typeof cfg === "function") { onStatus = cfg; cfg = {}; }  // back-compat
+  const env = serveEnv(cfg && cfg.mode);
+  const startServe = () => spawn("ollama", ["serve"],
+    { detached: true, stdio: "ignore", windowsHide: true, env }).unref();
   if (await ollamaRunning()) { onStatus({ phase: "ollama", pct: 1, msg: "Ollama already running." }); return; }
   if (await ollamaInstalled()) {
     onStatus({ phase: "ollama", pct: 1, msg: "Ollama installed — starting service…" });
-    spawn("ollama", ["serve"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    startServe();
     await waitFor(ollamaRunning, 20000);
     return;
   }
@@ -82,7 +92,7 @@ async function installOllama(onStatus) {
     onStatus({ phase: "ollama", pct: 0.2, msg: "Installing Ollama…" });
     await sh("bash", ["-lc", "curl -fsSL https://ollama.com/install.sh | sh"], { timeout: 300000 });
   }
-  spawn(IS_WIN ? "ollama" : "ollama", ["serve"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  startServe();
   onStatus({ phase: "ollama", pct: 0.98, msg: "Starting Ollama…" });
   await waitFor(ollamaRunning, 30000);
   onStatus({ phase: "ollama", pct: 1, msg: "Ollama ready." });
@@ -138,6 +148,7 @@ function writeConfig(dir, cfg) {
     `MEMORYVAULT_VISION_MODEL=${cfg.model}`,
     `MEMORYVAULT_OLLAMA_URL=${OLLAMA}/api/generate`,
     `MEMORYVAULT_VAULT_MODE=${cfg.vaultMode || "dir"}`,
+    cfg.mode === "cpu" ? "OLLAMA_NUM_GPU=0" : "",
     cfg.sources && cfg.sources.length ? `MEMORYVAULT_SOURCES=${cfg.sources.join(";")}` : "",
   ].filter(Boolean).join("\n") + "\n";
   fs.writeFileSync(path.join(dir, ".env"), env);
