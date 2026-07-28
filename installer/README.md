@@ -61,23 +61,43 @@ npm run dist       # -> dist/Constellation Setup Setup <ver>.exe (NSIS)
 
 `npm run dist:mac` / `npm run dist:linux` produce a `.dmg` / `.AppImage`.
 
-## What still needs doing before shipping to a non-technical user
+## Native backend bundle (no Docker, no Python for the user)
 
-This is a working wizard with real hardware detection and the Ollama +
-model-download flow implemented. To make it a turnkey `.exe`, these remain:
+The wizard's final step launches a **self-contained backend executable** —
+`memoryvault-brain(.exe)` — built with PyInstaller from `../scripts`. It's the
+whole Constellation engine (web UI + every pipeline stage) in one folder, so
+the target machine needs neither Python nor Docker.
 
-- **Backend packaging.** The wizard's final step launches the Constellation
-  backend. Right now `setup.js → launchStack()` looks for a bundled backend
-  executable (`backend/memoryvault-brain.exe`) and falls back to `docker
-  compose`. Ship one of:
-  - a **PyInstaller** build of the `scripts/` Python backend (native, no Docker), or
-  - **Docker Desktop** as a prerequisite (heavier for a non-technical user).
+Build it (produces `../scripts/dist/memoryvault-brain/`, which `electron-builder`
+ships into the app as `resources/backend/`):
+
+```bash
+# on the target OS (PyInstaller does not cross-compile):
+cd ../scripts
+./build-backend.sh          # Linux/macOS
+# or, on Windows:
+powershell -File build-backend.ps1
+```
+
+Then build the installer (`npm run dist`) and `launchStack()` runs the bundle
+directly; if the bundle is absent it falls back to `docker compose`.
+
+**Validated:** the bundle was built and run on Linux — `init`, `status`, and the
+`brain` web server all work from the native binary (imports, static assets, and
+the tag schema are correctly packaged). The `.spec` collects the heavy ML libs
+(insightface, onnxruntime, opencv) and the model weights download at first use,
+same as Ollama's.
+
+## Remaining before handing it to a non-technical user
+
+- **Sync the public repo's feature set.** ⚠ Important: `../scripts` in this
+  public repo is an older clean-room copy. The recent features (video support,
+  the gallery wall, the `/menu` launcher, video on the progress dashboard, etc.)
+  live in the private repo and haven't been ported+scrubbed here yet — so a
+  bundle built today serves the *original* UI (e.g. `/menu` 404s). Port those
+  before shipping.
 - **Icons** — drop `assets/icon.ico` / `icon.icns`.
-- **Code signing** — an unsigned `.exe` triggers SmartScreen; sign it for a
-  clean install.
-- **Test on real Windows hardware** — the detection was validated on Linux
-  (fallback paths) and is written against the documented Windows commands, but
-  the `.exe` build + WMI/`nvidia-smi` paths should be run on an actual Windows
-  box with an NVIDIA card before handing it to someone.
-
-None of these change the wizard UX — they're packaging/hardening steps.
+- **Code signing** — an unsigned `.exe` triggers SmartScreen; sign it.
+- **Test on real Windows hardware** — GPU detection is written against the
+  documented Windows commands and validated on Linux's fallback paths; run the
+  `.exe` on an actual Windows box with an NVIDIA/AMD card before shipping.

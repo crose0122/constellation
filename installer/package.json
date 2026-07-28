@@ -22,8 +22,7 @@
     "directories": { "output": "dist", "buildResources": "assets" },
     "files": ["main.js", "preload.js", "scan.js", "setup.js", "ui/**"],
     "extraResources": [
-      { "from": "../scripts", "to": "backend/scripts" },
-      { "from": "../schema", "to": "backend/schema" }
+      { "from": "../scripts/dist/memoryvault-brain", "to": "backend" }
     ],
     "win": {
       "target": ["nsis"],
