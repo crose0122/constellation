@@ -158,13 +158,16 @@ function writeConfig(dir, cfg) {
 // Launch the backend. Prefers a bundled backend executable shipped with the
 // app (set BACKEND_CMD at build time); falls back to Docker Compose if that's
 // how this machine runs it. Returns the child so the app can manage it.
-function launchStack(appDir, cfg, onStatus) {
-  const bundled = process.env.CONSTELLATION_BACKEND ||
-    path.join(appDir, "backend", IS_WIN ? "memoryvault-brain.exe" : "memoryvault-brain");
-  if (fs.existsSync(bundled)) {
+function launchStack(backendDir, appDir, cfg, onStatus) {
+  const exe = process.env.CONSTELLATION_BACKEND ||
+    path.join(backendDir, IS_WIN ? "memoryvault-brain.exe" : "memoryvault-brain");
+  if (fs.existsSync(exe)) {
     onStatus({ phase: "launch", msg: "Starting Constellation…" });
-    return spawn(bundled, ["brain"], { env: { ...process.env, ...envFromCfg(cfg) }, stdio: "ignore" });
+    return spawn(exe, ["brain"], {
+      env: { ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) },
+      stdio: "ignore", windowsHide: true, detached: true }).unref();
   }
+  // fallback for a dev machine that runs the stack via Docker
   onStatus({ phase: "launch", msg: "Starting Constellation via Docker…" });
   return spawn(IS_WIN ? "docker.exe" : "docker",
     ["compose", "up", "-d"], { cwd: appDir, stdio: "ignore", windowsHide: true });

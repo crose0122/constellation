@@ -9,6 +9,11 @@ const setup = require("./setup");
 
 let win;
 const APP_DIR = app.isPackaged ? path.dirname(app.getPath("exe")) : __dirname;
+// the PyInstaller backend bundle: shipped as extraResources when packaged,
+// or the local build output in dev
+const BACKEND_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, "backend")
+  : path.join(__dirname, "..", "scripts", "dist", "memoryvault-brain");
 
 function createWindow() {
   win = new BrowserWindow({
@@ -56,7 +61,7 @@ ipcMain.handle("finish", async (_e, cfg) => {
   try {
     const dataDir = path.join(app.getPath("home"), "Constellation");
     setup.writeConfig(dataDir, cfg);
-    setup.launchStack(APP_DIR, cfg, send);
+    setup.launchStack(BACKEND_DIR, APP_DIR, cfg, send);
     return { ok: true, url: "http://localhost:8484/menu" };
   } catch (e) { return { ok: false, error: String(e) }; }
 });

@@ -1,0 +1,5 @@
+dist/
+build/
+.buildvenv/
+*.spec.bak
+__pycache__/
