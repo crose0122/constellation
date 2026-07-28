@@ -1,0 +1,183 @@
+// Constellation Setup — wizard flow (renderer).
+"use strict";
+const S = window.setup;                 // preload bridge
+const main = document.getElementById("main");
+const stepsEl = document.getElementById("steps");
+const backBtn = document.getElementById("back");
+const nextBtn = document.getElementById("next");
+
+const state = { scan: null, cfg: { model: "qwen2.5vl:7b", libraryRoot: "", sources: [], vaultMode: "dir" } };
+const STEPS = ["welcome", "scan", "storage", "download", "done"];
+let step = 0;
+
+function gb(n) { return (n == null) ? "?" : `${n} GB`; }
+function esc(s) { return String(s || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c])); }
+
+function renderSteps() {
+  stepsEl.innerHTML = STEPS.map((_, i) =>
+    `<div class="s ${i < step ? "done" : i === step ? "on" : ""}"></div>`).join("");
+}
+
+async function go(n) { step = Math.max(0, Math.min(STEPS.length - 1, n)); renderSteps(); await render(); }
+backBtn.onclick = () => go(step - 1);
+
+async function render() {
+  backBtn.style.visibility = step === 0 ? "hidden" : "visible";
+  nextBtn.style.display = "";
+  nextBtn.disabled = false;
+  nextBtn.textContent = "Next →";
+  main.innerHTML = "";
+  await VIEWS[STEPS[step]]();
+}
+
+const VIEWS = {
+  // 1) Welcome ---------------------------------------------------------------
+  async welcome() {
+    main.innerHTML = `
+      <div class="big">
+        <div class="icon">🌌</div>
+        <h2 style="margin-top:0.6rem">Welcome to Constellation</h2>
+        <p class="sub" style="max-width:520px;margin:0.6rem auto 0">
+          Your family's photos and videos, organized by a private AI that runs
+          entirely on <b>this computer</b> — nothing ever leaves your network.
+          This setup will check your hardware, pick the right AI model for your
+          graphics card, download it, and get you running.</p>
+      </div>`;
+    nextBtn.textContent = "Get started →";
+    nextBtn.onclick = () => go(1);
+  },
+
+  // 2) System scan -----------------------------------------------------------
+  async scan() {
+    main.innerHTML = `<h2>Checking your computer…</h2>
+      <p class="sub">Looking at your graphics card, memory, storage, and network.</p>
+      <div class="spin"></div>`;
+    nextBtn.disabled = true;
+    const r = await S.scan();
+    if (!r.ok) { main.innerHTML = `<h2>Scan failed</h2><p class="sub">${esc(r.error)}</p>`; return; }
+    state.scan = r.data;
+    const { sys, gpu, storage, network, recommendation: rec } = r.data;
+    if (!state.cfg.libraryRoot) state.cfg.libraryRoot = (await S.defaults()).libraryRoot;
+    state.cfg.model = rec.model;
+
+    const gpuLine = gpu.name
+      ? `${esc(gpu.name)}${gpu.vramGB ? " · " + gb(gpu.vramGB) + " VRAM" : ""}`
+      : "No dedicated GPU found";
+    main.innerHTML = `
+      <h2>Here's what I found</h2>
+      <p class="sub">Review your hardware and the recommended AI model, then continue.</p>
+      <div class="card">
+        <div class="row"><span class="k">Graphics card</span><span class="v">${gpuLine}</span></div>
+        <div class="row"><span class="k">Processor</span><span class="v">${esc(sys.cpu)} · ${sys.cores} cores</span></div>
+        <div class="row"><span class="k">Memory</span><span class="v">${gb(sys.ramGB)}</span></div>
+        <div class="row"><span class="k">Drives</span><span class="v">${storage.drives.length} · ${network.machines.length} other computers on the network</span></div>
+      </div>
+      <div class="card rec ${rec.ok && rec.speed !== "slow" && rec.mode !== "gpu-offload" ? "" : "warn"}">
+        <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.5rem">
+          <span class="badge ${rec.speed === "slow" || rec.mode === "gpu-offload" ? "warn" : "ok"}">
+            ${rec.speed === "slow" ? "will be slow" : rec.mode === "gpu-offload" ? "workable" : "recommended"}</span>
+          <b>${esc(rec.model)}</b>
+        </div>
+        <p class="muted">${esc(rec.note)}</p>
+      </div>`;
+    if (gpu.detail) main.innerHTML += `<p class="muted">⚠ ${esc(gpu.detail)}</p>`;
+    nextBtn.disabled = false;
+    nextBtn.onclick = () => go(2);
+  },
+
+  // 3) Storage + sources -----------------------------------------------------
+  async storage() {
+    const { storage } = state.scan;
+    const cands = storage.photoCandidates;
+    main.innerHTML = `
+      <h2>Where are your photos?</h2>
+      <p class="sub">Pick where Constellation keeps its library, and which folders to pull photos & videos from. Sources are only ever read, never changed.</p>
+      <h3 style="font-size:0.82rem;color:#7f9bb3;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.4rem">Library location</h3>
+      <div class="card"><div class="pathrow">
+        <input id="lib" value="${esc(state.cfg.libraryRoot)}">
+        <button class="ghost" id="pickLib">Change…</button>
+      </div><p class="muted" style="margin-top:0.4rem">Managed library + database live here. Needs room for your collection.</p></div>
+      <h3 style="font-size:0.82rem;color:#7f9bb3;text-transform:uppercase;letter-spacing:0.1em;margin:0.9rem 0 0.4rem">Photo sources</h3>
+      <div class="card list" id="srcList">
+        ${cands.length ? cands.map((c, i) =>
+          `<label><input type="checkbox" data-src="${esc(c)}" ${i === 0 ? "checked" : ""}> ${esc(c)}</label>`).join("")
+          : `<p class="muted">No obvious photo folders found — add one below.</p>`}
+      </div>
+      <button class="ghost" id="addSrc">+ Add a folder…</button>`;
+    document.getElementById("pickLib").onclick = async () => {
+      const p = await S.pickFolder("Choose the Constellation library location");
+      if (p) { state.cfg.libraryRoot = p; document.getElementById("lib").value = p; }
+    };
+    document.getElementById("addSrc").onclick = async () => {
+      const p = await S.pickFolder("Choose a photo/video folder");
+      if (p) {
+        const l = document.createElement("label");
+        l.innerHTML = `<input type="checkbox" data-src="${esc(p)}" checked> ${esc(p)}`;
+        document.getElementById("srcList").appendChild(l);
+      }
+    };
+    nextBtn.textContent = "Download AI →";
+    nextBtn.onclick = () => {
+      state.cfg.libraryRoot = document.getElementById("lib").value.trim();
+      state.cfg.sources = [...document.querySelectorAll("[data-src]")]
+        .filter((c) => c.checked).map((c) => c.getAttribute("data-src"));
+      go(3);
+    };
+  },
+
+  // 4) Download AI -----------------------------------------------------------
+  async download() {
+    const rec = state.scan.recommendation;
+    main.innerHTML = `
+      <h2>Downloading the AI</h2>
+      <p class="sub">Installing Ollama and pulling <b>${esc(state.cfg.model)}</b> (~${rec.downloadGB} GB) onto your graphics card. This is a one-time download.</p>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between"><span>Ollama runtime</span><span id="oMsg" class="muted">waiting…</span></div>
+        <div class="track"><div class="fill" id="oFill"></div></div>
+        <div style="display:flex;justify-content:space-between;margin-top:0.6rem"><span>Vision model</span><span id="mMsg" class="muted">waiting…</span></div>
+        <div class="track"><div class="fill" id="mFill"></div></div>
+      </div>
+      <p class="muted" id="dErr"></p>`;
+    backBtn.style.visibility = "hidden";
+    nextBtn.disabled = true;
+    nextBtn.textContent = "Downloading…";
+    const set = (fill, msg, p) => {
+      const f = document.getElementById(fill); const m = document.getElementById(msg);
+      if (p != null) { f.style.width = Math.round(p * 100) + "%"; if (p >= 1) f.classList.add("done"); }
+      if (m) m.textContent = "";
+    };
+    S.onProgress((pr) => {
+      if (pr.phase === "ollama") { document.getElementById("oMsg").textContent = pr.msg; if (pr.pct != null) { document.getElementById("oFill").style.width = Math.round(pr.pct * 100) + "%"; if (pr.pct >= 1) document.getElementById("oFill").classList.add("done"); } }
+      if (pr.phase === "model") { document.getElementById("mMsg").textContent = pr.msg; if (pr.pct != null) { document.getElementById("mFill").style.width = Math.round(pr.pct * 100) + "%"; if (pr.pct >= 1) document.getElementById("mFill").classList.add("done"); } }
+      if (pr.phase === "error") document.getElementById("dErr").textContent = "⚠ " + pr.msg;
+    });
+    const r = await S.install(state.cfg);
+    if (r.ok) { nextBtn.disabled = false; nextBtn.textContent = "Finish →"; nextBtn.onclick = () => go(4); }
+    else { document.getElementById("dErr").textContent = "⚠ " + (r.error || "download failed"); nextBtn.textContent = "Retry"; nextBtn.disabled = false; nextBtn.onclick = () => go(3); }
+  },
+
+  // 5) Done ------------------------------------------------------------------
+  async done() {
+    main.innerHTML = `<div class="big"><div class="icon">✨</div>
+      <h2 style="margin-top:0.6rem">Starting Constellation…</h2>
+      <p class="sub" id="doneMsg">Configuring and launching.</p></div>`;
+    backBtn.style.visibility = "hidden";
+    nextBtn.disabled = true; nextBtn.style.display = "none";
+    const r = await S.finish(state.cfg);
+    if (r.ok) {
+      main.innerHTML = `<div class="big"><div class="icon">🌌</div>
+        <h2 style="margin-top:0.6rem">You're all set!</h2>
+        <p class="sub" style="max-width:480px;margin:0.6rem auto 1.2rem">
+          Constellation is running. Add your first photos, and the AI will start
+          tagging them. It's at <code>${esc(r.url)}</code>.</p>
+        <button class="primary" id="openApp">Open Constellation</button></div>`;
+      document.getElementById("openApp").onclick = () => S.openUrl(r.url);
+    } else {
+      main.innerHTML = `<div class="big"><div class="icon">⚠</div>
+        <h2>Couldn't start automatically</h2><p class="sub">${esc(r.error)}</p></div>`;
+    }
+  },
+};
+
+nextBtn.onclick = () => go(step + 1);
+go(0);
