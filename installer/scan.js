@@ -26,57 +26,97 @@ function ps(script) {
 }
 
 // ----------------------------------------------------------------- GPU
+function vendorOf(name) {
+  const n = (name || "").toLowerCase();
+  if (/nvidia|geforce|\brtx\b|\bgtx\b|quadro|tesla/.test(n)) return "NVIDIA";
+  if (/radeon|\bamd\b|\brx ?\d|vega|instinct|firepro/.test(n)) return "AMD";
+  if (/intel|\barc\b|iris|\buhd\b|\bhd graphics\b/.test(n)) return "Intel";
+  if (/apple/.test(n)) return "Apple";
+  return "Unknown";
+}
+// integrated GPUs (iGPU/APU) can't usefully run the 7B — flag them so the
+// recommendation routes to CPU rather than pretending they're accelerators
+function isIntegrated(name) {
+  const n = (name || "").toLowerCase();
+  return /\buhd\b|\bhd graphics\b|iris|vega \d|radeon\(tm\) graphics|radeon graphics$/.test(n);
+}
+function accelFor(vendor, name, vramGB) {
+  if (vendor === "NVIDIA") return "cuda";
+  if (vendor === "Apple") return "metal";
+  if (isIntegrated(name)) return "cpu";
+  if (vendor === "AMD") return "rocm";           // Ollama runs AMD via ROCm/HIP
+  if (vendor === "Intel") return /\barc\b/.test((name || "").toLowerCase()) ? "vulkan" : "cpu";
+  return "cpu";
+}
+
 async function scanGPU() {
   const out = { vendor: null, name: null, vramGB: null, driver: null,
-                accel: "cpu", detail: null };
-  // 1) nvidia-smi is the gold source when an NVIDIA card + driver are present
+                accel: "cpu", detail: null, all: [] };
+  // 1) nvidia-smi — authoritative for NVIDIA (confirms CUDA + exact VRAM)
   const smi = await run(IS_WIN ? "nvidia-smi.exe" : "nvidia-smi",
-    ["--query-gpu=name,memory.total,driver_version",
-     "--format=csv,noheader,nounits"]);
+    ["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"]);
   if (smi.trim()) {
     const [name, memMiB, driver] = smi.split("\n")[0].split(",").map((s) => s.trim());
-    out.vendor = "NVIDIA"; out.name = name; out.driver = driver;
-    out.vramGB = Math.round((parseFloat(memMiB) / 1024) * 10) / 10;
-    out.accel = "cuda";
+    Object.assign(out, { vendor: "NVIDIA", name, driver, accel: "cuda",
+      vramGB: Math.round((parseFloat(memMiB) / 1024) * 10) / 10 });
+    out.all = [{ name, vendor: "NVIDIA", vramGB: out.vramGB, accel: "cuda" }];
     return out;
   }
-  // 2) Windows without a working nvidia driver: WMI still reports the adapter
+  // 2) Windows: enumerate ALL adapters. Accurate VRAM comes from the driver
+  //    registry key (qwMemorySize, uint64) — WMI AdapterRAM caps at 4GB.
   if (IS_WIN) {
-    const j = await ps(
-      "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM,DriverVersion | ConvertTo-Json -Compress");
+    const reg = await ps(
+      "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\*' -EA SilentlyContinue " +
+      "| ForEach-Object { [pscustomobject]@{ name=$_.DriverDesc; vram=$_.'HardwareInformation.qwMemorySize'; drv=$_.DriverVersion } } " +
+      "| Where-Object { $_.name } | ConvertTo-Json -Compress");
+    const gpus = [];
     try {
-      let list = JSON.parse(j || "null");
-      if (list && !Array.isArray(list)) list = [list];
-      // prefer a discrete card (most VRAM) over integrated
-      const best = (list || []).sort(
-        (a, b) => (b.AdapterRAM || 0) - (a.AdapterRAM || 0))[0];
-      if (best) {
-        out.name = best.Name;
-        out.driver = best.DriverVersion || null;
-        // AdapterRAM is a uint32 and caps at ~4GB — treat as a floor
-        if (best.AdapterRAM) out.vramGB = Math.round(best.AdapterRAM / 1e9 * 10) / 10;
-        const n = (best.Name || "").toLowerCase();
-        out.vendor = n.includes("nvidia") || n.includes("geforce") || n.includes("rtx") ? "NVIDIA"
-          : n.includes("amd") || n.includes("radeon") ? "AMD"
-          : n.includes("intel") ? "Intel" : "Unknown";
-        if (out.vendor === "NVIDIA")
-          out.detail = "NVIDIA card detected but the driver isn't responding — a driver install/update may be needed for GPU acceleration.";
+      let list = JSON.parse(reg || "[]"); if (!Array.isArray(list)) list = [list];
+      for (const g of list) {
+        const name = g.name;
+        const vramGB = g.vram ? Math.round(Number(g.vram) / 1e9 * 10) / 10 : null;
+        const vendor = vendorOf(name);
+        gpus.push({ name, vendor, driver: g.drv || null, vramGB,
+          accel: accelFor(vendor, name, vramGB), integrated: isIntegrated(name) });
       }
-    } catch { /* leave nulls */ }
+    } catch { /* fall through to WMI */ }
+    if (!gpus.length) {  // last-ditch: WMI name only
+      const j = await ps("Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | ConvertTo-Json -Compress");
+      try { let l = JSON.parse(j || "[]"); if (!Array.isArray(l)) l = [l];
+        for (const g of l) { const vendor = vendorOf(g.Name);
+          gpus.push({ name: g.Name, vendor, driver: g.DriverVersion || null, vramGB: null,
+            accel: accelFor(vendor, g.Name, null), integrated: isIntegrated(g.Name) }); }
+      } catch { /* */ }
+    }
+    out.all = gpus;
+    // prefer a real accelerator with the most VRAM over an integrated chip
+    const pick = gpus.slice().sort((a, b) =>
+      (b.accel !== "cpu") - (a.accel !== "cpu") || (b.vramGB || 0) - (a.vramGB || 0))[0];
+    if (pick) Object.assign(out, pick);
+    if (out.vendor === "NVIDIA" && out.accel === "cuda")
+      out.detail = "NVIDIA card found but nvidia-smi didn't respond — the driver may need installing/updating for GPU acceleration.";
+    if (out.vendor === "AMD")
+      out.detail = "AMD GPU — Constellation runs it through Ollama's ROCm/HIP support (works on recent Radeon cards; a current Adrenalin driver helps).";
+    if (out.vendor === "Intel" && out.accel === "vulkan")
+      out.detail = "Intel Arc — GPU acceleration is experimental in Ollama; the wizard defaults to CPU but you can try the GPU.";
     return out;
   }
-  // 3) Apple Silicon: the unified memory is the GPU budget
+  // 3) Apple Silicon
   if (IS_MAC) {
     const sp = await run("system_profiler", ["SPDisplaysDataType"]);
     const m = sp.match(/Chipset Model:\s*(.+)/);
-    out.vendor = "Apple"; out.name = m ? m[1].trim() : "Apple GPU";
-    out.accel = "metal";
-    out.vramGB = Math.round(os.totalmem() / 1e9 * 0.6); // usable unified budget
+    Object.assign(out, { vendor: "Apple", name: m ? m[1].trim() : "Apple GPU",
+      accel: "metal", vramGB: Math.round(os.totalmem() / 1e9 * 0.6) });
     return out;
   }
-  // 4) Linux fallback: lspci
-  const lspci = await run("bash", ["-lc", "lspci | grep -i vga"]);
-  if (lspci.trim()) out.name = lspci.split("\n")[0].split(":").slice(2).join(":").trim();
+  // 4) Linux: rocm-smi (AMD) then lspci
+  const rocm = await run("bash", ["-lc", "rocm-smi --showproductname --showmeminfo vram 2>/dev/null"]);
+  if (rocm.trim()) { out.vendor = "AMD"; out.accel = "rocm"; out.name = "AMD Radeon (ROCm)"; }
+  const lspci = await run("bash", ["-lc", "lspci | grep -iE 'vga|3d'"]);
+  if (lspci.trim() && !out.name) {
+    out.name = lspci.split("\n")[0].split(":").slice(2).join(":").trim();
+    out.vendor = vendorOf(out.name); out.accel = accelFor(out.vendor, out.name, null);
+  }
   return out;
 }
 
@@ -170,21 +210,42 @@ async function scanNetwork() {
 function recommendModel(gpu, sys) {
   const v = gpu.vramGB || 0;
   const base = { model: "qwen2.5vl:7b", downloadGB: 6 };
-  if (gpu.accel === "cuda" && v >= 8)
-    return { ...base, mode: "gpu", speed: "fast", ok: true,
-      note: `Your ${gpu.name} has ${v} GB VRAM — plenty for full-GPU tagging.` };
-  if (gpu.accel === "cuda" && v >= 6)
-    return { ...base, mode: "gpu", speed: "good", ok: true,
-      note: `Your ${gpu.name} (${v} GB) fits the 7B model with a little headroom to spare.` };
+  // modes = what the user is allowed to switch to in the wizard (override).
+  const gpuCpu = ["gpu", "cpu"], cpuOnly = ["cpu"];
+  const label = gpu.name || "your system";
+
+  // NVIDIA (CUDA) — the best-supported path
+  if (gpu.accel === "cuda") {
+    if (v >= 8) return { ...base, mode: "gpu", speed: "fast", ok: true, modes: gpuCpu,
+      note: `${label} has ${v} GB VRAM — plenty for full-GPU tagging.` };
+    if (v >= 6) return { ...base, mode: "gpu", speed: "good", ok: true, modes: gpuCpu,
+      note: `${label} (${v} GB) fits the 7B model with a little headroom.` };
+    return { ...base, mode: "gpu-offload", speed: "moderate", ok: true, modes: gpuCpu,
+      note: `${label} has only ${v || "<6"} GB VRAM — the 7B model spills onto the CPU (works, just slower). An 8 GB+ card would be much faster.` };
+  }
+  // Apple Silicon (Metal)
   if (gpu.accel === "metal")
-    return { ...base, mode: "metal", speed: sys.ramGB >= 16 ? "good" : "moderate", ok: true,
+    return { ...base, mode: "metal", speed: sys.ramGB >= 16 ? "good" : "moderate", ok: true, modes: gpuCpu,
       note: `Apple GPU with ${sys.ramGB} GB unified memory — runs the 7B model on Metal.` };
-  if (gpu.accel === "cuda" && v > 0)
-    return { ...base, mode: "gpu-offload", speed: "moderate", ok: true,
-      note: `Your ${gpu.name} has only ${v} GB VRAM — the 7B model runs partly on the CPU (slower, but works). A card with 8 GB+ would be much faster.` };
-  return { ...base, mode: "cpu", speed: "slow", ok: sys.ramGB >= 12,
-    note: gpu.name
-      ? `No usable GPU acceleration detected on your ${gpu.name}. Tagging will run on the CPU — correct but slow (leave it running overnight). ${sys.ramGB} GB RAM.`
+  // AMD (ROCm/HIP via Ollama)
+  if (gpu.accel === "rocm") {
+    if (v >= 8) return { ...base, mode: "gpu", speed: "good", ok: true, modes: gpuCpu,
+      note: `${label} (${v} GB) — runs the 7B model on the GPU via ROCm. AMD support is newer than NVIDIA's; keep the Adrenalin driver current.` };
+    if (v >= 6 || v === 0) return { ...base, mode: "gpu-offload", speed: "moderate", ok: true, modes: gpuCpu,
+      note: `${label}${v ? " (" + v + " GB)" : ""} — AMD via ROCm with some CPU offload. If the GPU path misbehaves, switch to CPU.` };
+    return { ...base, mode: "cpu", speed: "slow", ok: sys.ramGB >= 12, modes: gpuCpu,
+      note: `${label} has little VRAM — recommend CPU tagging (slow). You can try the GPU if you like.` };
+  }
+  // Intel Arc — experimental GPU accel; default to CPU but allow trying it
+  if (gpu.accel === "vulkan")
+    return { ...base, mode: "cpu", speed: "slow", ok: sys.ramGB >= 12, modes: gpuCpu,
+      note: `${label} — Intel Arc GPU acceleration is experimental in Ollama, so this defaults to CPU (slow but reliable). You can try the GPU from the dropdown.` };
+  // Integrated GPU or nothing usable → CPU
+  return { ...base, mode: "cpu", speed: "slow", ok: sys.ramGB >= 12, modes: cpuOnly,
+    note: gpu.integrated
+      ? `${label} is an integrated GPU — not enough for the 7B model, so tagging runs on the CPU (correct but slow; leave it overnight). ${sys.ramGB} GB RAM.`
+      : gpu.name
+      ? `No usable GPU acceleration on ${label} — CPU tagging (slow). ${sys.ramGB} GB RAM.`
       : `No GPU detected — CPU-only tagging (slow). ${sys.ramGB} GB RAM.` };
 }
 

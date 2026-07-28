@@ -19,13 +19,23 @@ The vision model is **`qwen2.5vl:7b`** (~6 GB, wants ~7–8 GB VRAM). The 3B
 variant is broken on modern Ollama (degenerate output), so the scanner will
 **never** silently fall back to it. Instead:
 
-| Detected GPU | Recommendation |
-|---|---|
-| NVIDIA ≥ 8 GB VRAM | 7B, full GPU — *fast* |
-| NVIDIA 6–8 GB | 7B, GPU — *good* |
-| Apple Silicon | 7B on Metal |
-| NVIDIA < 6 GB | 7B with CPU offload — *works, slower*, suggests an 8 GB+ card |
-| No usable GPU | 7B on CPU — *slow*, warns to leave it running overnight |
+| Detected GPU | Path | Recommendation |
+|---|---|---|
+| NVIDIA ≥ 8 GB VRAM | CUDA | 7B, full GPU — *fast* |
+| NVIDIA 6–8 GB | CUDA | 7B, GPU — *good* |
+| NVIDIA < 6 GB | CUDA | 7B with CPU offload — *works, slower*; suggests an 8 GB+ card |
+| AMD Radeon ≥ 8 GB | ROCm/HIP | 7B on GPU — *good*; notes AMD support is newer, keep drivers current |
+| AMD Radeon 6–8 GB / unknown | ROCm | 7B with some CPU offload; can switch to CPU if it misbehaves |
+| Apple Silicon | Metal | 7B on Metal |
+| Intel Arc | Vulkan (experimental) | Defaults to **CPU** (reliable); GPU offered as an option |
+| Integrated GPU (Intel UHD/Iris, AMD APU) | — | 7B on CPU — *slow* |
+| No GPU | — | 7B on CPU — *slow*, warns to run overnight |
+
+Detection (`scan.js`) reads accurate VRAM from the Windows driver registry
+(`qwMemorySize`, uint64 — WMI's `AdapterRAM` caps at 4 GB), picks the best
+accelerator over any integrated chip, and the recommendation logic lives in
+`recommendModel()`. Whenever more than one path is viable, the wizard shows a
+**"Run the AI on: graphics card / CPU"** dropdown so the user can override.
 
 That logic lives in `scan.js → recommendModel()`.
 

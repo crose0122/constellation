@@ -81,6 +81,22 @@ const VIEWS = {
         <p class="muted">${esc(rec.note)}</p>
       </div>`;
     if (gpu.detail) main.innerHTML += `<p class="muted">⚠ ${esc(gpu.detail)}</p>`;
+    state.cfg.mode = rec.mode;
+    // manual override — when more than one path is viable, let the user choose
+    if (rec.modes && rec.modes.length > 1) {
+      const MODE_LABEL = { gpu: "Use my graphics card (faster)", cpu: "Use the CPU only (slower, always works)" };
+      main.innerHTML += `
+        <div class="card"><div class="row" style="align-items:center">
+          <span class="k">Run the AI on</span>
+          <select id="modeSel" style="background:#06101c;border:1px solid #1c3e60;color:#dfeefa;border-radius:8px;padding:0.4rem 0.6rem;font:inherit">
+            ${rec.modes.map((m) => `<option value="${m}" ${(/gpu/.test(rec.mode) ? m === "gpu" : m === rec.mode) ? "selected" : ""}>${MODE_LABEL[m] || m}</option>`).join("")}
+          </select>
+        </div><p class="muted" style="margin-top:0.4rem">We picked the best option for your hardware — change it only if you hit trouble.</p></div>`;
+      setTimeout(() => {
+        const sel = document.getElementById("modeSel");
+        if (sel) sel.onchange = () => { state.cfg.mode = sel.value === "gpu" && /offload/.test(rec.mode) ? "gpu-offload" : sel.value; };
+      }, 0);
+    }
     nextBtn.disabled = false;
     nextBtn.onclick = () => go(2);
   },
