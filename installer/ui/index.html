@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Constellation Setup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { height: 100vh; overflow: hidden; color: #dfeefa;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(ellipse at 50% 0%, #0a1830 0%, #010409 60%);
+    display: flex; flex-direction: column; }
+  header { padding: 1.4rem 2rem 0.6rem; }
+  header h1 { font-size: 1.25rem; font-weight: 650; }
+  header .steps { display: flex; gap: 0.5rem; margin-top: 0.8rem; }
+  header .steps .s { flex: 1; height: 4px; border-radius: 2px; background: #1c3e60; }
+  header .steps .s.on { background: #49c6ff; }
+  header .steps .s.done { background: #5ec98f; }
+  main { flex: 1; overflow-y: auto; padding: 1.2rem 2rem; }
+  footer { padding: 1rem 2rem 1.4rem; display: flex; justify-content: space-between; align-items: center; }
+  button { font: inherit; cursor: pointer; border: 0; border-radius: 999px; padding: 0.6rem 1.5rem; font-weight: 600; }
+  .primary { background: #1e6fd0; color: #fff; }
+  .primary:disabled { background: #1c3e60; color: #5f7d95; cursor: default; }
+  .ghost { background: transparent; color: #8fd4ff; }
+  h2 { font-size: 1.1rem; margin-bottom: 0.3rem; }
+  p.sub { color: #7f9bb3; font-size: 0.85rem; margin-bottom: 1.1rem; line-height: 1.4; }
+  .card { background: #0a1420; border: 1px solid #1c3e60; border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 0.8rem; }
+  .card .row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; }
+  .card .row .k { color: #7f9bb3; }
+  .card .row .v { font-variant-numeric: tabular-nums; }
+  .rec { border-color: #2e6b4f; }
+  .rec.warn { border-color: #7a5c1e; }
+  .rec .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 0.15rem 0.55rem; border-radius: 999px; }
+  .rec .badge.ok { background: #14532d; color: #bbf7d0; }
+  .rec .badge.warn { background: #4a3410; color: #fde68a; }
+  .list label { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0.2rem;
+    font-size: 0.88rem; border-bottom: 1px solid #10243a; }
+  .list label:last-child { border-bottom: 0; }
+  .list .meta { margin-left: auto; color: #5f7d95; font-size: 0.78rem; }
+  .pathrow { display: flex; gap: 0.5rem; align-items: center; }
+  .pathrow input { flex: 1; background: #06101c; border: 1px solid #1c3e60; color: #dfeefa;
+    border-radius: 8px; padding: 0.5rem 0.7rem; font: inherit; }
+  .track { height: 10px; background: #10243a; border-radius: 5px; overflow: hidden; margin: 0.3rem 0; }
+  .fill { height: 100%; width: 0%; background: #49c6ff; border-radius: 5px; transition: width 0.3s; }
+  .fill.done { background: #5ec98f; }
+  .muted { color: #5f7d95; font-size: 0.82rem; }
+  .spin { width: 34px; height: 34px; border: 3px solid #1c3e60; border-top-color: #49c6ff;
+    border-radius: 50%; animation: r 0.9s linear infinite; margin: 2rem auto; }
+  @keyframes r { to { transform: rotate(360deg); } }
+  .big { text-align: center; padding: 2rem 0; }
+  .big .icon { font-size: 3rem; }
+  code { background: #06101c; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌌 Constellation Setup</h1>
+  <div class="steps" id="steps"></div>
+</header>
+<main id="main"></main>
+<footer>
+  <button class="ghost" id="back" style="visibility:hidden">← Back</button>
+  <button class="primary" id="next">Next →</button>
+</footer>
+<script src="wizard.js"></script>
+</body>
+</html>

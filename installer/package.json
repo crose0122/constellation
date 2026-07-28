@@ -1,0 +1,41 @@
+{
+  "name": "constellation-setup",
+  "productName": "Constellation Setup",
+  "version": "0.1.0",
+  "description": "GUI installer for Constellation — scans your hardware, recommends and downloads the vision AI onto your GPU, and launches the app.",
+  "main": "main.js",
+  "author": "Constellation",
+  "license": "SEE LICENSE IN ../README.md",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:linux": "electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.constellation.setup",
+    "productName": "Constellation Setup",
+    "directories": { "output": "dist", "buildResources": "assets" },
+    "files": ["main.js", "preload.js", "scan.js", "setup.js", "ui/**"],
+    "extraResources": [
+      { "from": "../scripts", "to": "backend/scripts" },
+      { "from": "../schema", "to": "backend/schema" }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Constellation Setup"
+    },
+    "mac": { "target": ["dmg"], "icon": "assets/icon.icns", "category": "public.app-category.photography" },
+    "linux": { "target": ["AppImage"], "category": "Graphics" }
+  }
+}
