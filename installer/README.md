@@ -90,12 +90,6 @@ same as Ollama's.
 
 ## Remaining before handing it to a non-technical user
 
-- **Sync the public repo's feature set.** ⚠ Important: `../scripts` in this
-  public repo is an older clean-room copy. The recent features (video support,
-  the gallery wall, the `/menu` launcher, video on the progress dashboard, etc.)
-  live in the private repo and haven't been ported+scrubbed here yet — so a
-  bundle built today serves the *original* UI (e.g. `/menu` 404s). Port those
-  before shipping.
 - **Icons** — drop `assets/icon.ico` / `icon.icns`.
 - **Code signing** — an unsigned `.exe` triggers SmartScreen; sign it.
 - **Test on real Windows hardware** — GPU detection is written against the
