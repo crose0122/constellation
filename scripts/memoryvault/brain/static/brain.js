@@ -227,7 +227,7 @@ function layoutCategories() {
   if (!ns.length) return;
   const nsAll = ns.filter((n) => !n.core);
   ns.length = 0; ns.push(...nsAll);
-  // cluster by dimension (community-graph layout): contiguous
+  // cluster by dimension (Elliot's community-graph reference): contiguous
   // Fibonacci-sphere runs put same-hued categories in neighborhoods, so
   // inter-community bundles emerge naturally
   ns.sort((a, b) => (a.dim || "").localeCompare(b.dim || "")
@@ -1536,8 +1536,10 @@ function kioskNet() {
 }
 function kioskShow() {
   if (!kiosk) return;
-  startMemories();
-  kioskTimer = setTimeout(kioskNet, 5 * 60 * 1000);
+  // the default slideshow is now the living gallery wall; it runs for a few
+  // minutes then returns here (?kiosk=1) to resume the sphere->wall cycle.
+  // (the single-photo "memories" walk stays available via its button.)
+  location.href = "/wall?kiosk=1";
 }
 function cancelKiosk() {
   if (!kiosk) return;

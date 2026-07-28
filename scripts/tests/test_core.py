@@ -44,6 +44,27 @@ class PipelineTest(unittest.TestCase):
         discover(self.conn, self.src)
         return ingest(self.conn)
 
+    def test_video_ingest_makes_row_and_poster(self):
+        import shutil as _sh
+        import subprocess
+        if not _sh.which("ffmpeg") or not _sh.which("ffprobe"):
+            self.skipTest("ffmpeg not available")
+        vid = self.src / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-f", "lavfi",
+             "-i", "testsrc=duration=2:size=320x240:rate=10",
+             "-movflags", "+faststart", str(vid)],
+            capture_output=True, check=True)
+        stats = self._discover_ingest()
+        self.assertEqual(stats["canonical"], 1)
+        row = self.conn.execute(
+            "SELECT media_kind, duration, library_path, sha256 FROM photos"
+        ).fetchone()
+        self.assertEqual(row["media_kind"], "video")
+        self.assertGreater(row["duration"], 0)
+        from memoryvault import video
+        self.assertTrue(video.poster_path(row["sha256"]).exists())
+
     def test_ingest_and_exact_dup(self):
         make_photo(self.src / "a.jpg", seed=1)
         make_photo(self.src / "b.jpg", seed=2)
@@ -239,11 +260,11 @@ class PipelineTest(unittest.TestCase):
         note.write_text(
             content.replace(
                 "<!-- manual -->\n<!-- /manual -->",
-                "<!-- manual -->\nthe day we got the dog\n<!-- /manual -->",
+                "<!-- manual -->\nthe day we got Sam\n<!-- /manual -->",
             )
         )
         generate(self.conn)
-        self.assertIn("the day we got the dog", note.read_text())
+        self.assertIn("the day we got Sam", note.read_text())
         index = (config.MEMORYVAULT_ROOT / "People" / "Alex.md").read_text()
         self.assertIn("2021", index)
 

@@ -27,13 +27,21 @@ DEFAULT_K = 8
 
 
 def _node(row) -> dict:
-    return {
+    keys = row.keys()
+    kind = row["media_kind"] if "media_kind" in keys else "photo"
+    n = {
         "id": row["id"],
         "thumb": f"/thumb/{row['sha256'][:16]}.jpg",
         "display": f"/display/{row['sha256'][:16]}.jpg",
         "taken_at": row["taken_at"],
         "label": (row["taken_at"] or "")[:10],
+        "kind": kind,
     }
+    if kind == "video":
+        n["video"] = f"/video/{row['sha256'][:16]}"   # playable original
+        if "duration" in keys and row["duration"]:
+            n["duration"] = row["duration"]
+    return n
 
 
 DISPLAY_MAX_PX = 2048
@@ -210,8 +218,26 @@ class BrainDB:
             {"key": "describe", "label": "Captions + OCR + orientation",
              "done": desc_done, "total": desc_total},
         ]
+        # video processing funnel — files discovered as video, then how far
+        # they've moved through ingest -> screen -> tag -> caption
+        vid_files = q("SELECT COUNT(*) FROM files WHERE media_kind = 'video'")
+        vid_ingested = q("SELECT COUNT(*) FROM photos WHERE media_kind = 'video'")
+        vid_screened = q("SELECT COUNT(*) FROM photos WHERE media_kind = 'video' "
+                         "AND status IN ('screened','tagged','noted')")
+        vid_tagged = q("SELECT COUNT(*) FROM photos WHERE media_kind = 'video' "
+                       "AND status IN ('tagged','noted')")
+        try:
+            vid_captioned = q("SELECT COUNT(*) FROM descriptions d "
+                              "JOIN photos p ON p.id = d.photo_id "
+                              "WHERE p.media_kind = 'video'")
+        except sqlite3.OperationalError:
+            vid_captioned = 0
+        videos = {"discovered": vid_files, "ingested": vid_ingested,
+                  "screened": vid_screened, "tagged": vid_tagged,
+                  "captioned": vid_captioned}
         return {
             "sweeps": sweeps,
+            "videos": videos,
             "discovered": discovered,
             "ingested": ingested,
             "screen_done": screened + vaulted + review,
@@ -333,6 +359,46 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj):
         self._send(200, json.dumps(obj).encode(), "application/json")
 
+    _VIDEO_CTYPE = {".mp4": "video/mp4", ".mov": "video/quicktime",
+                    ".m4v": "video/x-m4v", ".webm": "video/webm",
+                    ".3gp": "video/3gpp", ".avi": "video/x-msvideo"}
+
+    def _serve_range(self, path):
+        """Serve a file honoring a single Range request (206), so <video> can
+        seek without downloading the whole clip. Falls back to full 200."""
+        size = path.stat().st_size
+        ctype = self._VIDEO_CTYPE.get(path.suffix.lower(), "application/octet-stream")
+        rng = self.headers.get("Range")
+        start, end = 0, size - 1
+        partial = False
+        if rng and rng.startswith("bytes="):
+            try:
+                s, e = rng[6:].split("-", 1)
+                start = int(s) if s else 0
+                end = int(e) if e else size - 1
+                end = min(end, size - 1)
+                partial = 0 <= start <= end
+            except ValueError:
+                partial = False
+        with open(path, "rb") as f:
+            if partial:
+                f.seek(start)
+                body = f.read(end - start + 1)
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            else:
+                body = f.read()
+                self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=604800")
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # player closed the connection (seek/stop) — normal
+
     def do_GET(self):
         url = urlparse(self.path)
         q = parse_qs(url.query)
@@ -376,6 +442,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(204, b"", "text/plain")
             elif url.path == "/people":
                 page = (STATIC_DIR / "people.html").read_bytes()
+                self._send(200, page, "text/html")
+            elif url.path == "/wall":
+                page = (STATIC_DIR / "wall.html").read_bytes()
+                self._send(200, page, "text/html")
+            elif url.path in ("/menu", "/home"):
+                page = (STATIC_DIR / "menu.html").read_bytes()
                 self._send(200, page, "text/html")
             elif url.path == "/api/people":
                 rows = conn.execute(
@@ -529,16 +601,15 @@ class Handler(BaseHTTPRequestHandler):
                              "ORDER BY taken_at IS NULL, taken_at DESC, "
                              "id DESC ")
                 rows = conn.execute(
-                    f"SELECT id, sha256, taken_at FROM photos {where} "
+                    f"SELECT id, sha256, taken_at, media_kind, duration "
+                    f"FROM photos {where} "
                     + order_sql
                     + "LIMIT ? OFFSET ?", (*params, lim, off)).fetchall()
                 total = conn.execute(
                     f"SELECT COUNT(*) c FROM photos {where}", params
                 ).fetchone()["c"]
-                self._json({"total": total, "offset": off, "photos": [
-                    {"id": r["id"], "thumb": f"/thumb/{r['sha256'][:16]}.jpg",
-                     "display": f"/display/{r['sha256'][:16]}.jpg",
-                     "taken_at": r["taken_at"]} for r in rows]})
+                self._json({"total": total, "offset": off,
+                            "photos": [_node(r) for r in rows]})
             elif url.path == "/node":
                 page = (STATIC_DIR / "node.html").read_bytes()
                 self._send(200, page, "text/html")
@@ -684,7 +755,7 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": "vault locked"}).encode(), "application/json")
                     return
                 dest = q.get("dest", [""])[0]
-                if dest not in ("partner", "other"):
+                if dest not in ("casey", "other"):
                     dest = None
                 wconn = connect(config.DB_PATH)
                 try:
@@ -910,6 +981,17 @@ class Handler(BaseHTTPRequestHandler):
                 f = _display_rendition(conn, sha16) if sha16.isalnum() else None
                 if f:
                     self._send(200, f.read_bytes(), "image/jpeg")
+                else:
+                    self._send(404, b"not found", "text/plain")
+            elif url.path.startswith("/video/"):
+                sha16 = Path(url.path).name.split(".")[0]
+                row = conn.execute(
+                    "SELECT library_path FROM photos WHERE sha256 LIKE ? "
+                    "AND media_kind = 'video'", (sha16 + "%",)).fetchone() \
+                    if sha16.isalnum() else None
+                vf = (config.LIBRARY_ROOT / row["library_path"]) if row else None
+                if vf and vf.exists():
+                    self._serve_range(vf)
                 else:
                     self._send(404, b"not found", "text/plain")
             else:

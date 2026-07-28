@@ -150,8 +150,37 @@ def screen_verdict(
     return SAFE, s
 
 
+def verdict_for_row(row, score_fn=pass1_score, confirm_fn=confirm_explicit):
+    """Media-aware verdict. Photos: screen the image. Videos: screen SEVERAL
+    sampled frames and take the worst verdict (a tame poster must never let an
+    explicit clip through) — VAULT beats REVIEW beats SAFE; a bare ERROR only
+    if no frame produced a real verdict. Returns (verdict, score)."""
+    if row["media_kind"] != "video":
+        return screen_verdict(str(config.LIBRARY_ROOT / row["library_path"]),
+                              score_fn, confirm_fn)
+    from . import video as vid
+    frames = vid.sample_frame_paths(
+        str(config.LIBRARY_ROOT / row["library_path"]), row["sha256"],
+        row["duration"] if "duration" in row.keys() else None)
+    if not frames:
+        return ERROR, None
+    worst, worst_score, saw_ok = ERROR, None, False
+    rank = {VAULT: 3, REVIEW: 2, SAFE: 1, ERROR: 0}
+    for f in frames:
+        v, s = screen_verdict(str(f), score_fn, confirm_fn)
+        if v != ERROR:
+            saw_ok = True
+        if rank[v] > rank[worst]:
+            worst, worst_score = v, s
+    # clean the temp screening frames (poster stays — it's the display image)
+    for f in frames:
+        if "screenframes-" in str(f):
+            f.unlink(missing_ok=True)
+    return (worst if saw_ok else ERROR), worst_score
+
+
 def screen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit) -> dict:
-    """Screen every staged photo. Halts up front if the vault is unavailable."""
+    """Screen every staged photo/video. Halts up front if vault unavailable."""
     if not vault.is_mounted():
         raise vault.VaultUnavailable(
             f"vault not mounted at {config.VAULT_MOUNT}; run vault-open first "
@@ -163,8 +192,7 @@ def screen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit) -> dict:
     stats = {SAFE: 0, VAULT: 0, REVIEW: 0, ERROR: 0}
 
     for row in rows:
-        path = config.LIBRARY_ROOT / row["library_path"]
-        verdict, score = screen_verdict(str(path), score_fn, confirm_fn)
+        verdict, score = verdict_for_row(row, score_fn, confirm_fn)
         stats[verdict] += 1
         if verdict == SAFE:
             conn.execute(
@@ -212,25 +240,42 @@ def rescreen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit,
     rows = conn.execute(sql).fetchall()
     stats = {SAFE: 0, VAULT: 0, REVIEW: 0, ERROR: 0}
 
+    import sqlite3
+    import time as _time
+
+    def _retry_locked(fn, attempts=6, wait=10):
+        # rescreen runs alongside the describe/tag writers; out-wait the writer
+        # lock instead of dying on it (mirrors tag.py's guard)
+        for a in range(attempts):
+            try:
+                return fn()
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) or a == attempts - 1:
+                    raise
+                _time.sleep(wait)
+
     for i, row in enumerate(rows, 1):
-        path = config.LIBRARY_ROOT / row["library_path"]
-        verdict, score = screen_verdict(str(path), score_fn, confirm_fn)
+        verdict, score = verdict_for_row(row, score_fn, confirm_fn)
         stats[verdict] += 1
-        if verdict == SAFE:
-            conn.execute(
-                "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
-                "confidence, model_version) VALUES "
-                "(?, 'screen_check', 'rescreen-passed', 1.0, 'rescreen-1.0')",
-                (row["id"],),
-            )
-        elif verdict == VAULT:
-            vault.route_to_vault(conn, row["id"], review=False)
-        elif verdict == REVIEW:
-            vault.route_to_vault(conn, row["id"], review=True)
-        else:  # ERROR — fail safe: no verdict recorded, retried next sweep
-            record_error(conn, "rescreen", "rescreen error (see logs)",
-                         photo_id=row["id"])
-        conn.commit()
+
+        def _write():
+            if verdict == SAFE:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                    "confidence, model_version) VALUES "
+                    "(?, 'screen_check', 'rescreen-passed', 1.0, 'rescreen-1.0')",
+                    (row["id"],),
+                )
+            elif verdict == VAULT:
+                vault.route_to_vault(conn, row["id"], review=False)
+            elif verdict == REVIEW:
+                vault.route_to_vault(conn, row["id"], review=True)
+            else:  # ERROR — fail safe: no verdict recorded, retried next sweep
+                record_error(conn, "rescreen", "rescreen error (see logs)",
+                             photo_id=row["id"])
+            conn.commit()
+
+        _retry_locked(_write)
         if i % 200 == 0:
             print(f"  {i}/{len(rows)} rescreened, "
                   f"{stats[VAULT]} vaulted, {stats[REVIEW]} to review",

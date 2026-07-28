@@ -42,6 +42,19 @@
     width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
     background: #0a1420; cursor: pointer;
   }
+  .grid .cell { position: relative; }
+  .cell .vbadge {
+    position: absolute; right: 4px; bottom: 4px; pointer-events: none;
+    background: #010409cc; color: #fff; font-size: 0.62rem; font-weight: 600;
+    padding: 1px 5px; border-radius: 4px; display: flex; gap: 3px; align-items: center;
+  }
+  .cell .vplay {
+    position: absolute; inset: 0; margin: auto; width: 2.2rem; height: 2.2rem;
+    pointer-events: none; display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 1rem; background: #010409aa; border-radius: 999px;
+  }
+  #lbVideo { max-width: 100vw; max-height: calc(100vh - 4rem); background: #000; }
+  #lbVideo.hidden, #lbImg.hidden { display: none; }
   #sentinel { height: 60px; }
 
   #lb { position: fixed; inset: 0; z-index: 20; background: #010409f8;
@@ -114,6 +127,7 @@
   <button id="lbShare">📤 Share</button>
   <div class="nav" id="prev">‹</div>
   <img id="lbImg" alt="">
+  <video id="lbVideo" class="hidden" controls playsinline preload="metadata"></video>
   <div class="nav" id="next">›</div>
   <div id="lbChips"></div>
   <div id="lbBar"></div>
@@ -158,7 +172,24 @@ async function loadMore() {
         if (selecting) { toggleSel(base + j, img); return; }
         open(base + j);
       });
-      grid.appendChild(img);
+      if (p.kind === "video") {
+        const cell = document.createElement("div");
+        cell.className = "cell";
+        cell.appendChild(img);
+        const play = document.createElement("div");
+        play.className = "vplay"; play.textContent = "▶";
+        cell.appendChild(play);
+        if (p.duration) {
+          const b = document.createElement("div");
+          b.className = "vbadge";
+          const m = Math.floor(p.duration / 60), s = Math.round(p.duration % 60);
+          b.textContent = `${m}:${String(s).padStart(2, "0")}`;
+          cell.appendChild(b);
+        }
+        grid.appendChild(cell);
+      } else {
+        grid.appendChild(img);
+      }
     });
   } finally { loading = false; }
 }
@@ -234,8 +265,19 @@ function open(i) {
   const p = photos[i];
   zoomCtl.reset();
   const img = document.getElementById("lbImg");
-  img.src = p.thumb;
-  img.src = p.display;
+  const vid = document.getElementById("lbVideo");
+  vid.pause();
+  if (p.kind === "video") {
+    img.classList.add("hidden");
+    vid.classList.remove("hidden");
+    vid.src = p.video;
+    vid.play().catch(() => {});     // autoplay may be blocked; controls remain
+  } else {
+    vid.classList.add("hidden"); vid.removeAttribute("src"); vid.load();
+    img.classList.remove("hidden");
+    img.src = p.thumb;
+    img.src = p.display;
+  }
   document.getElementById("lbBar").textContent =
     `${i + 1} / ${total ?? photos.length}` +
     (p.taken_at ? " · " + new Date(p.taken_at).toDateString() : "");
@@ -270,7 +312,11 @@ async function loadChips(p, at) {
     }
   } catch (e) { /* tags are decoration — never block the photo */ }
 }
-function close() { document.getElementById("lb").classList.add("hidden"); cur = -1; }
+function close() {
+  const v = document.getElementById("lbVideo");
+  v.pause(); v.removeAttribute("src"); v.load();
+  document.getElementById("lb").classList.add("hidden"); cur = -1;
+}
 
 document.getElementById("lbClose").addEventListener("click", close);
 document.getElementById("lbRemove").addEventListener("click", async () => {
@@ -310,8 +356,8 @@ document.getElementById("lbVault").addEventListener("click", async () => {
   if (cur < 0) return;
   const dest = confirm(
     "Move this photo into the encrypted Personal Vault?\n\n" +
-    "OK = Partner's folder · Cancel then OK = Other")
-    ? "partner"
+    "OK = Casey's folder · Cancel then OK = Other")
+    ? "casey"
     : (confirm("Put it in the Other folder instead?") ? "other" : null);
   if (!dest) return;
   const p = photos[cur];
