@@ -27,7 +27,7 @@ full-screen app (PWA) on tablets and phones.
 - **Curation** — heuristics + a model "rescue" pass triage junk (screenshots,
   documents, cache files) into reviewable bins; deletion always requires a
   typed confirmation
-- **The Brain** — a stdlib-only web server: constellation, gallery, people,
+- **The Constellation** — a stdlib-only web server: constellation, gallery, people,
   memories slideshow, curation, live pipeline progress
 
 ## Quick start (Docker — recommended)
