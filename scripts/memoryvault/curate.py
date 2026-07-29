@@ -249,3 +249,92 @@ def vision_docs(conn, shard: str | None = None, limit: int | None = None) -> dic
             print(f"  {i}/{len(rows)} checked, {stats['documents']} documents",
                   flush=True)
     return stats
+
+
+SCREENSHOT_PROMPT = (
+    "This image is a screenshot from a phone or computer. Look at what is ON "
+    "the screen. "
+    "If the screen shows a real photograph — people, pets, a place, food, a "
+    "moment someone captured with a camera — answer: photo. "
+    "If the screen shows text or interface content — a text-message or chat "
+    "conversation, receipt, invoice, order or delivery confirmation, bank or "
+    "medical document, article, search results, web page, map, calendar, "
+    "game, or an app settings screen — answer: text. "
+    "Answer with exactly one word: photo or text."
+)
+
+
+def screenshots(conn, shard: str | None = None, limit: int | None = None) -> dict:
+    """GPU pass over screenshot-flagged photos that are still on display.
+
+    `vision_docs` skips anything that already carries a curation tag, so a
+    screenshot the heuristic or a human marked Kept was never looked at again
+    — which is how text-message captures, receipts and documents kept reaching
+    the wall and the Memories stream.
+
+    This pass judges the picture itself: screenshots *of a photograph* are left
+    alone, screenshots of text or interface content are re-binned as
+    Trash(screenshot-text). Re-binning is reversible from /curation and, per
+    the project invariant, nothing here deletes a file.
+    """
+    from .tag import model_image_b64
+    import requests
+
+    sql = (
+        "SELECT p.id, p.library_path FROM photos p "
+        "JOIN tags r ON r.photo_id = p.id "
+        "  AND r.dimension = 'curation_reason' AND r.value = 'screenshot' "
+        "WHERE p.status IN ('tagged','noted','screened') "
+        "  AND p.library_path IS NOT NULL "
+        # only those still visible: never re-judge something already binned away
+        "  AND NOT EXISTS (SELECT 1 FROM tags c WHERE c.photo_id = p.id "
+        "                  AND c.dimension = 'curation' "
+        "                  AND c.value IN ('Trash','Removed','Delete')) "
+    )
+    if shard:
+        i, m = (int(x) for x in shard.split("/"))
+        sql += f"AND p.id % {m} = {i} "
+    sql += "ORDER BY p.id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql).fetchall()
+
+    stats = {"checked": 0, "binned": 0, "kept": 0, "errors": 0}
+    print(f"screenshot triage: {len(rows)} to review", flush=True)
+    for i, row in enumerate(rows, 1):
+        try:
+            b64 = model_image_b64(
+                str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
+            r = requests.post(config.OLLAMA_URL, json={
+                "model": config.VISION_MODEL, "prompt": SCREENSHOT_PROMPT,
+                "images": [b64], "stream": False}, timeout=180)
+            r.raise_for_status()
+            ans = r.json().get("response", "").strip().lower()
+            if ans.startswith("text"):
+                # clear whatever bin it was in (a photo may only sit in one)
+                conn.execute(
+                    "DELETE FROM tags WHERE photo_id = ? AND dimension IN "
+                    "('curation','curation_reason')", (row["id"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                    "confidence, model_version) VALUES "
+                    "(?, 'curation', 'Trash', 0.85, 'shotscan-1.0')",
+                    (row["id"],))
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                    "confidence, model_version) VALUES "
+                    "(?, 'curation_reason', 'screenshot-text', 0.85, "
+                    "'shotscan-1.0')", (row["id"],))
+                stats["binned"] += 1
+            else:
+                stats["kept"] += 1
+            stats["checked"] += 1
+        except Exception as e:
+            stats["errors"] += 1
+            from .db import record_error
+            record_error(conn, "shotscan", repr(e), photo_id=row["id"])
+        conn.commit()
+        if i % 100 == 0:
+            print(f"  {i}/{len(rows)} checked, {stats['binned']} binned, "
+                  f"{stats['kept']} real photos kept", flush=True)
+    return stats
