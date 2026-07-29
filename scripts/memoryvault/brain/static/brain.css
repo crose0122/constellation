@@ -123,7 +123,7 @@ body.ambient #catPanel { display: none; }
   border: 1px solid #23507a88; color: #bfe4ff;
   padding: 0.16rem 0.6rem; border-radius: 999px;
 }
-#galleryLink {
+#galleryLink, #wallLink {
   pointer-events: auto; text-decoration: none;
   background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
   border-radius: 999px; padding: 0.35rem 1rem; font-size: 0.8rem;

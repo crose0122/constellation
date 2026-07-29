@@ -97,6 +97,17 @@ class BrainDB:
                     "important", "good", "neutral", "casual", "solo",
                     "kept", "delete", "removed", "posing")
 
+    # Whole dimensions that are pipeline bookkeeping, not memories. They were
+    # also the largest neurons on screen (rescreen-passed alone was 33k photos,
+    # bigger than any real category) and, because they co-occur with nearly
+    # everything, they generated most of the graph's edges.
+    _SKIP_DIMS = ("screen_check", "curation_check", "curation", "quality")
+
+    # Individual values that are catch-alls or judgements rather than subjects.
+    _SKIP_PAIRS = (("group_size", "no people"),
+                   ("occasion", "everyday"),
+                   ("sentiment", "why do we still have this"))
+
     _cat_cache: dict = {}
 
     def categories(self, conn, top: int = 40, min_count: int = 2, k: int = 6) -> dict:
@@ -110,12 +121,20 @@ class BrainDB:
             "SELECT dimension, value, COUNT(*) AS c FROM tags "
             "WHERE dimension != 'curation_reason' "
             "GROUP BY dimension, value HAVING c >= ? ORDER BY c DESC LIMIT ?",
-            (min_count, top * 2),
+            (min_count, top * 4),
         ).fetchall()
+
+        def keep(r) -> bool:
+            dim = r["dimension"].strip().lower()
+            val = r["value"].strip().lower()
+            if dim in self._SKIP_DIMS or val in self._SKIP_VALUES:
+                return False
+            return (dim, val) not in self._SKIP_PAIRS
+
         nodes = [
             {"key": f"{r['dimension']}:{r['value']}", "dim": r["dimension"],
              "value": r["value"], "count": r["c"]}
-            for r in rows if r["value"].strip().lower() not in self._SKIP_VALUES
+            for r in rows if keep(r)
         ][:top]
         keys = {n["key"] for n in nodes}
         pairs = conn.execute(
