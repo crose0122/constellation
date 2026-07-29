@@ -134,6 +134,54 @@ def live_photos(conn) -> dict:
     return {"hidden": hidden, "examined": len(rows)}
 
 
+def exclude_path(conn, needle: str) -> dict:
+    """Hide everything whose source path contains `needle`.
+
+    A sweep of someone's drive picks up things that are not memories — a
+    training course, recorded meetings, exported project files — and no vision
+    model should have to judge those one frame at a time when the folder name
+    already says what they are. Cheaper, exact, and reversible.
+
+    Two populations, because a source file may or may not have been ingested
+    yet: already-ingested items get curation 'Removed' (hidden everywhere,
+    restorable from /curation, nothing deleted); ones still staged are marked
+    so ingest passes over them instead of doing the work first and hiding the
+    result after.
+    """
+    like = f"%{needle}%"
+
+    # Naming a path is a human decision, so it outranks an automatic verdict:
+    # items the heuristics or the rescue pass left as 'Kept' get re-binned.
+    # Ones already hidden (Trash/Removed/Delete) need no work.
+    rows = conn.execute(
+        "SELECT DISTINCT f.photo_id FROM files f WHERE f.source_path LIKE ? "
+        "AND f.photo_id IS NOT NULL AND f.photo_id NOT IN "
+        "(SELECT photo_id FROM tags WHERE dimension = 'curation' "
+        " AND value IN ('Trash','Removed','Delete'))", (like,)
+    ).fetchall()
+    for r in rows:
+        # a photo may sit in only one bin — clear the old verdict first
+        conn.execute(
+            "DELETE FROM tags WHERE photo_id = ? AND dimension IN "
+            "('curation','curation_reason')", (r["photo_id"],))
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+            "confidence, model_version) VALUES "
+            "(?, 'curation', 'Removed', 1.0, 'excluded-path-1.0')",
+            (r["photo_id"],))
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+            "confidence, model_version) VALUES "
+            "(?, 'curation_reason', 'not-a-memory', 1.0, 'excluded-path-1.0')",
+            (r["photo_id"],))
+
+    staged = conn.execute(
+        "UPDATE files SET disposition = 'excluded' WHERE source_path LIKE ? "
+        "AND disposition = 'discovered'", (like,)).rowcount
+    conn.commit()
+    return {"needle": needle, "hidden": len(rows), "skipped_before_ingest": staged}
+
+
 def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
     """GPU second-opinion over the Trash bin: the heuristics never look at
     pixels, so real photos with stripped EXIF (messenger apps) or small
