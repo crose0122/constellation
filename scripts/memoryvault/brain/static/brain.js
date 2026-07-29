@@ -198,10 +198,48 @@ function setRadius(n, baseR) {
    than blinks), with a 1s crossfade. */
 const SWAP_MS = 5 * 60 * 1000;
 
+// Frame cap in lite mode. ?fps=N overrides (60 = uncapped in practice).
+const FRAME_MS = (() => {
+  const q = new URLSearchParams(location.search).get("fps");
+  const n = q !== null ? parseInt(q, 10) : 0;
+  return n > 0 ? Math.floor(1000 / n) : 30;
+})();
+
+// How many pathways a weak device draws. ?edges=N overrides for measuring.
+const EDGE_CAP = (() => {
+  const q = new URLSearchParams(location.search).get("edges");
+  return q !== null ? parseInt(q, 10) : 70;
+})();
+
+/* Round photo sprites.
+
+   Drawing a face used to mean an arc clip plus a downscale of the full 512px
+   thumb, per node, per frame — twice mid-crossfade. On a budget Android-TV box
+   that pinned the whole scene at ~2fps. Rasterise each photo into a small round
+   sprite once instead, and let frames just blit it, scaled.
+
+   The size is FIXED, not derived from the on-screen radius: every node's radius
+   changes every frame as the sphere turns (pscale is the perspective factor),
+   so a size-derived sprite would re-rasterise constantly — which is exactly the
+   cost we're trying to avoid. One sprite per photo, for its whole life. */
+const SPRITE_PX = 160;
+function roundSprite(im) {
+  if (!im.naturalWidth) return null;
+  if (im._rsCanvas) return im._rsCanvas;
+  const size = SPRITE_PX;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = size;
+  const c = cv.getContext("2d");
+  c.beginPath();
+  c.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+  c.clip();
+  const iw = im.naturalWidth, ih = im.naturalHeight, sq = Math.min(iw, ih);
+  c.drawImage(im, (iw - sq) / 2, (ih - sq) / 2, sq, sq, 0, 0, size, size);
+  im._rsCanvas = cv;
+  return cv;
+}
+
 function assignPhoto(n) {
-  // photo textures on the stars are the most expensive per-frame draw; a weak
-  // device (auto-detected, or ?lite) shows the glowing stars without them
-  if (LITE) { n.nextSwap = performance.now() + SWAP_MS; return; }
   const url = n.core
     ? "/api/catphoto?family=1"
     : `/api/catphoto?dim=${encodeURIComponent(n.dim)}&value=${encodeURIComponent(n.value)}`;
@@ -258,8 +296,11 @@ function layoutCategories() {
 }
 
 async function loadCategories() {
-  // fewer neurons on small screens so the web has room to breathe
-  const top = Math.min(W, H) < 700 ? 22 : 40;
+  // fewer neurons on small screens so the web has room to breathe, and fewer
+  // again on weak devices — edge count grows with the square of node count,
+  // and edges are what cost. A TV is also viewed from across a room, where 40
+  // labelled neurons is unreadable anyway.
+  const top = LITE ? 24 : (Math.min(W, H) < 700 ? 22 : 40);
   const res = await fetch(`/api/categories?top=${top}`);
   if (!res.ok) throw new Error("busy");
   const data = await res.json();
@@ -277,7 +318,15 @@ async function loadCategories() {
     nodes.set(c.key, n);
   }
   layoutCategories();
-  for (const n of nodes.values()) assignPhoto(n);
+  // Only the biggest neurons wear photos. On weak boxes each photo face costs
+  // real milliseconds per frame, and a thumbnail on a tiny distant star reads
+  // as a smudge anyway — so spend the budget where it's actually visible.
+  // ?photos=N overrides (0 = none) for measuring a new device.
+  const capParam = new URLSearchParams(location.search).get("photos");
+  const cap = capParam !== null ? parseInt(capParam, 10)
+                                : (LITE ? 10 : nodes.size);
+  const bySize = [...nodes.values()].sort((a, b) => (b.count || 0) - (a.count || 0));
+  bySize.forEach((n, i) => { if (i < cap) assignPhoto(n); });
   edges = data.edges.filter((e) => nodes.has(e.a) && nodes.has(e.b));
   // the nucleus: our family, at the exact center of the sphere — the fixed
   // point every memory orbits
@@ -745,16 +794,10 @@ function drawFamilyCore(n, isFocus) {
   const rr = r * breathe * 0.9;
   const drawFace = (im, alpha) => {
     if (!im) return;
-    ctx.save();
+    const sp = roundSprite(im);
+    if (!sp) return;
     ctx.globalAlpha = alpha;
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, rr, 0, Math.PI * 2);
-    ctx.clip();
-    const iw = im.naturalWidth, ih = im.naturalHeight;
-    const sq = Math.min(iw, ih);
-    ctx.drawImage(im, (iw - sq) / 2, (ih - sq) / 2, sq, sq,
-                  n.x - rr, n.y - rr, rr * 2, rr * 2);
-    ctx.restore();
+    ctx.drawImage(sp, n.x - rr, n.y - rr, rr * 2, rr * 2);
   };
   drawFace(n.img, 0.94);
   if (n.imgNext) drawFace(n.imgNext, 0.94 * n.imgFade);
@@ -845,12 +888,18 @@ function buildEdgeLayer() {
       c: [(a.p3[0] + b.p3[0]) / 2 * k, (a.p3[1] + b.p3[1]) / 2 * k,
           (a.p3[2] + b.p3[2]) / 2 * k],
     };
-    // filament texture around the spine
-    const strands = e.strands || (2 + Math.round(w * 6));
+    // filament texture around the spine — the single most expensive thing on
+    // screen. 215 edges x up to 8 additive quadratic strokes is ~1,300 strokes
+    // a frame, which is what pins TV boxes at single-digit fps. Weak devices
+    // get the spine only.
+    const strands = LITE ? 0 : (e.strands || (2 + Math.round(w * 6)));
     const rand = rng(hashStr(e.a + "|" + e.b));
     e.geo3 = [];
     for (let si = 0; si < strands; si++) e.geo3.push(strand3D(a, b, rand));
   }
+  // ...and only the strongest pathways are drawn at all on weak devices.
+  const ranked = [...edges].sort((x, y) => (y.w || 0) - (x.w || 0));
+  ranked.forEach((e, i) => { e.rank = i; });
   const withGeo = edges.filter((e) => e.geo3 && e.geo3.length);
   for (let i = 0; i < FLOW_N && withGeo.length; i++) {
     const e = withGeo[Math.floor(Math.random() * withGeo.length)];
@@ -1016,16 +1065,10 @@ function drawCategoryNode(n) {
   const rr = n.r * ps * 0.92;
   const drawFace = (im, alpha) => {
     if (!im || rr < 5) return;
-    ctx.save();
+    const sp = roundSprite(im);
+    if (!sp) return;
     ctx.globalAlpha = alpha;
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, rr, 0, Math.PI * 2);
-    ctx.clip();
-    const iw = im.naturalWidth, ih = im.naturalHeight;
-    const sq = Math.min(iw, ih);
-    ctx.drawImage(im, (iw - sq) / 2, (ih - sq) / 2, sq, sq,
-                  n.x - rr, n.y - rr, rr * 2, rr * 2);
-    ctx.restore();
+    ctx.drawImage(sp, n.x - rr, n.y - rr, rr * 2, rr * 2);
   };
   const photoAlpha = lit
     ? Math.min(1, 0.9 * dfade + 0.25)
@@ -1126,6 +1169,7 @@ function drawEdges() {
     ctx.lineWidth = 0.6;
     for (const e of edges) {
       if (!e.geo3) continue;
+      if (LITE && e.rank >= EDGE_CAP) continue;
       const onF = focusId != null && (e.a === focusId || e.b === focusId);
       const colA = dimColor(nodes.get(e.a)?.dim);
       const colB = dimColor(nodes.get(e.b)?.dim);
@@ -1256,19 +1300,18 @@ function draw() {
 }
 
 // frame pacing + auto-lite: if the device can't hold a decent frame rate for a
-// sustained stretch, drop to LITE (1x resolution, no photo textures, 30fps cap)
+// sustained stretch, drop to LITE (1x resolution, 30fps cap). Photos stay —
+// since they became round sprites they cost a blit, not a clip-and-downscale.
 let _lastFrame = 0, _slowFrames = 0, _liteTripped = false;
 function goLite() {
   if (_liteTripped) return;
   _liteTripped = true; LITE = true;
-  for (const n of nodes.values()) { n.imgNext = n.img = null; }
-  if (typeof core === "object" && core) core.img = core.imgNext = null;
   resize();   // re-render at DPR 1
 }
 function loop(ts) {
   ts = ts || 0;
   const dt = ts - _lastFrame;
-  if (LITE && dt < 30) { requestAnimationFrame(loop); return; }   // ~30fps cap
+  if (LITE && dt < FRAME_MS) { requestAnimationFrame(loop); return; }  // fps cap
   if (!LITE && _lastFrame) {
     if (dt > 45) { if (++_slowFrames > 90) goLite(); }            // ~1.5s of <22fps
     else _slowFrames = Math.max(0, _slowFrames - 2);
