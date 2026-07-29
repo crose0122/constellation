@@ -20,9 +20,17 @@ the display, the ambient loop, and the wall all render exactly as they do in a b
 
 ## Configure the server
 
-Default address is `http://10.0.0.5:8484/?lite=1`. Change it in Settings
-(long-press in kiosk mode, or the gear on the Screensaver entry). Use the `?lite=1`
-suffix on low-powered boxes — it drops the display to a lighter render path.
+On first launch the app opens Settings and asks for your Constellation address —
+whatever you type into a browser at home, e.g. `http://10.0.0.5:8484/?lite=1`. Add
+the `?lite=1` suffix on low-powered boxes; it drops the display to a lighter render
+path. Change it later by long-pressing in kiosk mode, or via the gear on the
+Screensaver entry.
+
+Building it for a specific household? Bake the address in and skip setup entirely:
+
+```bash
+./gradlew :app:assembleDebug -PconstellationUrl='http://10.0.0.5:8484/?lite=1'
+```
 
 ## Install (sideload)
 

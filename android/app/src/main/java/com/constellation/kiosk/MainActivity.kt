@@ -17,6 +17,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         immersive()
+        if (Prefs.isUnset(this)) {          // first run on a fresh install
+            startActivity(Intent(this, SettingsActivity::class.java))
+            finish()
+            return
+        }
         val wv = KioskWebView.create(this, Prefs.url(this))
         wv.setOnLongClickListener {
             startActivity(Intent(this, SettingsActivity::class.java)); true
