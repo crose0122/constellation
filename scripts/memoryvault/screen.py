@@ -97,18 +97,13 @@ def confirm_explicit(path: str) -> bool:
         from .tag import model_image_b64
 
         image_b64 = model_image_b64(path)
-        resp = requests.post(
-            config.OLLAMA_URL,
-            json={
-                "model": config.VISION_MODEL,
-                "prompt": _CONFIRM_PROMPT,
-                "images": [image_b64],
-                "stream": False,
-            },
-            timeout=60,
-        )
-        resp.raise_for_status()
-        answer = resp.json().get("response", "").strip().lower()
+        from .vision_http import post_vision_text
+        answer = post_vision_text({
+            "model": config.VISION_MODEL,
+            "prompt": _CONFIRM_PROMPT,
+            "images": [image_b64],
+            "stream": False,
+        }, timeout=60).strip().lower()
         if answer.startswith("yes"):
             return True
         if answer.startswith("no"):

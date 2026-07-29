@@ -141,7 +141,7 @@ def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
     permanent override the heuristics respect. Checked photos are stamped
     (curation_check) so nightly re-runs only review NEW trash."""
     from .tag import model_image_b64
-    import requests
+    from .vision_http import post_vision_text
 
     sql = (
         "SELECT p.id, p.library_path FROM photos p "
@@ -162,11 +162,10 @@ def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
         try:
             b64 = model_image_b64(
                 str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
-            r = requests.post(config.OLLAMA_URL, json={
+            ans = post_vision_text({
                 "model": config.VISION_MODEL, "prompt": RESCUE_PROMPT,
-                "images": [b64], "stream": False}, timeout=180)
-            r.raise_for_status()
-            ans = r.json().get("response", "").strip().lower()
+                "images": [b64], "stream": False},
+                timeout=180).strip().lower()
             if ans.startswith("yes"):
                 conn.execute(
                     "UPDATE tags SET value = 'Kept', "
@@ -203,7 +202,7 @@ def vision_docs(conn, shard: str | None = None, limit: int | None = None) -> dic
     """GPU pass: bin photographed paperwork/documents as Trash(document).
     Runs after tagging so the GPUs are free; restorable via /curation."""
     from .tag import model_image_b64
-    import requests
+    from .vision_http import post_vision_text
 
     sql = (
         "SELECT id, library_path FROM photos WHERE status IN "
@@ -222,11 +221,10 @@ def vision_docs(conn, shard: str | None = None, limit: int | None = None) -> dic
         try:
             b64 = model_image_b64(
                 str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
-            r = requests.post(config.OLLAMA_URL, json={
+            ans = post_vision_text({
                 "model": config.VISION_MODEL, "prompt": DOC_PROMPT,
-                "images": [b64], "stream": False}, timeout=180)
-            r.raise_for_status()
-            ans = r.json().get("response", "").strip().lower()
+                "images": [b64], "stream": False},
+                timeout=180).strip().lower()
             if ans.startswith("yes"):
                 conn.execute(
                     "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
@@ -278,7 +276,7 @@ def screenshots(conn, shard: str | None = None, limit: int | None = None) -> dic
     the project invariant, nothing here deletes a file.
     """
     from .tag import model_image_b64
-    import requests
+    from .vision_http import post_vision_text
 
     sql = (
         "SELECT p.id, p.library_path FROM photos p "
@@ -305,11 +303,10 @@ def screenshots(conn, shard: str | None = None, limit: int | None = None) -> dic
         try:
             b64 = model_image_b64(
                 str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
-            r = requests.post(config.OLLAMA_URL, json={
+            ans = post_vision_text({
                 "model": config.VISION_MODEL, "prompt": SCREENSHOT_PROMPT,
-                "images": [b64], "stream": False}, timeout=180)
-            r.raise_for_status()
-            ans = r.json().get("response", "").strip().lower()
+                "images": [b64], "stream": False},
+                timeout=180).strip().lower()
             if ans.startswith("text"):
                 # clear whatever bin it was in (a photo may only sit in one)
                 conn.execute(
