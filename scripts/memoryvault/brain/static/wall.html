@@ -36,10 +36,10 @@
   }
   .frame::before {                      /* the mat + gold fillet line */
     content: ""; position: absolute; inset: 0; z-index: 1;
-    background: #0b0b0b;                 /* black mat, like the reference */
-    box-shadow: inset 0 0 0 2px #c9a542, /* gold fillet */
-                inset 0 0 0 4px #0b0b0b,
-                inset 0 0 10px #000a;
+    background: #16120d;                 /* near-black rag mat */
+    box-shadow: inset 0 0 0 2px #8a6a3a, /* thin gilt fillet */
+                inset 0 0 0 4px #16120d,
+                inset 0 0 14px #000b;
   }
   .frame.m-linen::before {          /* warm linen mat, gold fillet */
     background: #d9cdb4;
@@ -237,10 +237,10 @@ function fillSlot(slot, instant) {
 // so gilt profiles dominate but never sit next to their own twin, and the
 // quiet profiles (ebony, rose, plain) are deliberately scarce.
 const FRAMES = [
-  "f-baroque", "f-gilt",   "f-rococo",  "f-carved",
-  "f-baroque", "f-silver", "f-gilt",    "f-plain",
-  "f-rococo",  "f-carved", "f-baroque", "f-ebony",
-  "f-gilt",    "f-silver", "f-rococo",  "f-rose",
+  "f-walnut",   "f-oak",       "f-mahogany",  "f-giltwood",
+  "f-walnut",   "f-cherry",    "f-oak",       "f-ebonised",
+  "f-mahogany", "f-walnut",    "f-oak",       "f-driftwood",
+  "f-cherry",   "f-giltwood",  "f-walnut",    "f-silverleaf",
 ];
 const MATS = ["", "", "m-linen", "", "m-cream", "", "m-linen", ""];
 

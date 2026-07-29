@@ -1,262 +1,259 @@
 #!/usr/bin/env python3
 """Generate the gallery wall's picture frames as CSS border-images.
 
-A reference board of real antique frames sorts
-into a handful of profiles that share structure: a molding (gilt, silver,
-ebonised), an edge treatment repeated along the rails (beading, egg-and-dart,
-fluting, ropework), and a corner ornament (acanthus volutes, rococo scrolls,
-shell crests). Rather than hand-tune a base64 blob per style, this builds each
-one from those three choices and writes brain/static/frames.css.
+These are rendered as real pixels, not as SVG shapes. Two earlier attempts drew
+the frames as vector gradients — one with an SVG <filter> supplying the grain —
+and both came out looking like moulded plastic: Android's WebView drops filter
+effects when it rasterises a data-URI SVG for border-image, so the timber
+arrived perfectly smooth. Painting the pixels here removes that dependency
+entirely, and it's the only way to get grain that actually survives to the TV.
 
-Run it after editing a profile:
+What makes it read as wood rather than a brown gradient:
+
+  grain    fractal value noise, stretched ~40x along the length of each rail so
+           it streaks like sawn timber, plus cathedral figure — the arcs you
+           get when a saw cuts across the growth rings — from a warped sine.
+
+  profile  a moulding is a carved cross-section, and what the eye reads as
+           carving is light falling across it: outer arris, crown, the dark
+           hollow of the cove, an inner fillet catching light, then the shadow
+           of the rabbet. That's a ramp ACROSS the rail, and it does most of
+           the work.
+
+  mitre    a real frame is four lengths cut at 45 degrees, so the grain TURNS
+           at each corner and a seam runs diagonally out of it. Grain that
+           flows continuously around the perimeter looks wrong even when you
+           can't say why.
+
+Run after editing a timber:
     python3 tools/make_frames.py
-
-border-image needs the ornament to live in the border band and the middle to
-be empty, so every frame is drawn on a 440x440 canvas with an 84px band.
 """
 from __future__ import annotations
 
 import base64
-import math
+import io
 import pathlib
 
-SIZE = 440           # canvas
-BAND = 84            # border width the CSS slices at
-INNER = SIZE - BAND  # inner edge of the molding
+import numpy as np
+from PIL import Image
 
+# Kept small deliberately: border-image slices the corners and repeats the
+# rails, so a big canvas buys nothing but bytes — and these ship to a 2GB
+# Android TV box.
+SIZE = 256
+BAND = 52
 OUT = (pathlib.Path(__file__).resolve().parent.parent
        / "memoryvault" / "brain" / "static" / "frames.css")
 
 
-# ---------------------------------------------------------------- palettes
-# Each is a sheen ramp read across the molding: dark valley, bright crown,
-# mid, shadowed hollow, second highlight, dark valley. That alternation is
-# what reads as carved metal rather than a flat coloured bar.
-PALETTES = {
-    "gold": ["#6e4d15", "#f6e4a6", "#c69a34", "#8a6417", "#f2dd9b", "#6e4d15"],
-    "paleGold": ["#7d6430", "#fdf3d2", "#dcc07a", "#a98b3f", "#f7ecc4", "#7d6430"],
-    "silver": ["#4f4f57", "#eef0f6", "#a4a4ae", "#6c6c75", "#e2e4ee", "#4f4f57"],
-    "ebony": ["#0f0c07", "#3a2f1e", "#1c1710", "#0b0906", "#2e2517", "#0f0c07"],
-    "rose": ["#6d4436", "#f3d7c6", "#cfa088", "#9a6c56", "#eccdb8", "#6d4436"],
+# ------------------------------------------------------------------- timber
+# base, deep shadow, mid, crown highlight, grain strength, warm/cool figure
+WOODS = {
+    "walnut":     ("#4a352a", "#1a120c", "#5a4133", "#856048", 0.34, 0.55),
+    "mahogany":   ("#553028", "#1d0f0b", "#663a30", "#8f5747", 0.32, 0.50),
+    "oak":        ("#7a6244", "#33280f", "#8a7050", "#b39a72", 0.40, 0.78),
+    "cherry":     ("#603a2c", "#24120c", "#734a38", "#9c6a52", 0.30, 0.48),
+    "ebonised":   ("#211b16", "#070605", "#2c241d", "#463a2e", 0.42, 0.32),
+    "driftwood":  ("#635b52", "#26221c", "#736a5f", "#9a9081", 0.44, 0.88),
+    # gold leaf laid over a carved timber ground: keeps the grain and the
+    # profile showing through, just a metal palette over it
+    "giltwood":   ("#7e6528", "#2e230c", "#a0863c", "#dcc287", 0.20, 0.42),
+    "silverleaf": ("#6b6d73", "#232529", "#878a91", "#c2c6ce", 0.22, 0.38),
 }
 
+# Light from above-left: the top rail catches it, the bottom rail is in
+# shadow. This is what makes a flat ring read as a raised, physical frame.
+RAIL_LIGHT = {"top": 1.16, "left": 1.02, "right": 0.86, "bottom": 0.70}
 
-def grad(name: str, stops: list[str]) -> str:
-    at = [0, 0.18, 0.42, 0.6, 0.8, 1]
-    body = "".join(
-        f'<stop offset="{o}" stop-color="{c}"/>' for o, c in zip(at, stops))
-    return (f'<linearGradient id="{name}" x1="0" y1="0" x2="1" y2="1">'
-            f"{body}</linearGradient>")
-
-
-def dark_of(stops: list[str]) -> str:
-    return stops[0]
-
-
-# --------------------------------------------------------------- ornaments
-def beading(fill: str, stroke: str, r: float = 8.4, step: float = 28.5) -> str:
-    """A row of half-round beads down each rail — the commonest antique edge."""
-    out = []
-    x = BAND + 6
-    while x < INNER - 6:
-        for cx, cy in ((x, BAND - 4), (x, INNER + 4)):
-            out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r}" '
-                       f'fill="url(#{fill})" stroke="{stroke}" stroke-width="0.6"/>')
-        for cy, cx in ((x, BAND - 4), (x, INNER + 4)):
-            out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r}" '
-                       f'fill="url(#{fill})" stroke="{stroke}" stroke-width="0.6"/>')
-        x += step
-    return "".join(out)
-
-
-def egg_and_dart(fill: str, stroke: str) -> str:
-    """Alternating egg and dart — the classical cyma recta enrichment."""
-    out = []
-    step = 34.4
-    x = BAND + 18
-    while x < INNER - 18:
-        for along, across in ((x, 42.0), (x, SIZE - 42.0)):
-            out.append(
-                f'<ellipse cx="{along:.1f}" cy="{across:.1f}" rx="20.2" ry="25.2" '
-                f'fill="url(#{fill})" stroke="{stroke}" stroke-width="1.3"/>'
-                f'<ellipse cx="{along:.1f}" cy="{across:.1f}" rx="27.2" ry="31.2" '
-                f'fill="none" stroke="url(#{fill}Dark)" stroke-width="2.4"/>')
-            d = along + step / 2
-            if d < INNER - 18:
-                out.append(f'<path d="M {d:.1f},{across-20.2:.1f} '
-                           f'L {d-3:.1f},{across+20.2:.1f} '
-                           f'L {d+3:.1f},{across+20.2:.1f} Z" '
-                           f'fill="url(#{fill}Dark)"/>')
-        for across, along in ((x, 42.0), (x, SIZE - 42.0)):
-            out.append(
-                f'<ellipse cx="{along:.1f}" cy="{across:.1f}" rx="25.2" ry="20.2" '
-                f'fill="url(#{fill})" stroke="{stroke}" stroke-width="1.3"/>'
-                f'<ellipse cx="{along:.1f}" cy="{across:.1f}" rx="31.2" ry="27.2" '
-                f'fill="none" stroke="url(#{fill}Dark)" stroke-width="2.4"/>')
-            d = across + step / 2
-            if d < INNER - 18:
-                out.append(f'<path d="M {along-20.2:.1f},{d:.1f} '
-                           f'L {along+20.2:.1f},{d-3:.1f} '
-                           f'L {along+20.2:.1f},{d+3:.1f} Z" '
-                           f'fill="url(#{fill}Dark)"/>')
-        x += step * 2
-    return "".join(out)
-
-
-def fluting(fill: str, stroke: str) -> str:
-    """Plain reeded molding — the quiet frames on the board."""
-    out = []
-    for off in (18, 30, 42, 54, 66):
-        out.append(
-            f'<rect x="{off}" y="{off}" width="{SIZE-2*off}" height="{SIZE-2*off}" '
-            f'fill="none" stroke="url(#{fill}{"Dark" if off % 24 else ""})" '
-            f'stroke-width="{3 if off % 24 else 5}" stroke-opacity="0.9"/>')
-    return "".join(out)
-
-
-def ropework(fill: str, stroke: str) -> str:
-    """Twisted rope torus — common on Victorian ovals."""
-    out = []
-    step = 16.0
-    for i in range(int((INNER - BAND) / step) + 1):
-        p = BAND + i * step
-        for cx, cy in ((p, 40), (p, SIZE - 40), (40, p), (SIZE - 40, p)):
-            out.append(
-                f'<path d="M {cx-8:.1f},{cy-8:.1f} Q {cx:.1f},{cy:.1f} '
-                f'{cx+8:.1f},{cy-8:.1f} Q {cx:.1f},{cy+4:.1f} '
-                f'{cx-8:.1f},{cy-8:.1f} Z" fill="url(#{fill})" '
-                f'stroke="{stroke}" stroke-width="0.7"/>')
-    return "".join(out)
-
-
-def volute(fill: str, stroke: str, scale: float = 1.0) -> str:
-    """Acanthus corner volute — a logarithmic spiral of leaf, mirrored into all
-    four corners. This is the shape that reads as 'baroque' at a glance.
-
-    Everything here must stay inside the BANDxBAND corner tile: border-image
-    slices the corners at BAND, so ornament drawn beyond that is simply cut
-    off — which is exactly what made the first pass look like plain beading."""
-    C = BAND / 2                       # centre of the corner tile
-    R = BAND / 2 - 4                   # keep the whole spiral inside the slice
-    pts = []
-    for i in range(28):
-        t = i / 27
-        a = t * 3.4 * math.pi
-        r = 4 + R * math.exp(-1.15 * t) * scale
-        pts.append((C + math.cos(a) * r * 0.95, C - math.sin(a) * r * 0.72))
-    spiral = " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-    leaf = "".join(
-        f'<path d="M {C:.1f},{C:.1f} Q {C+0.55*R*math.cos(k):.1f},'
-        f'{C-0.5*R*math.sin(k)-3*i:.1f} {C+R*math.cos(k):.1f},'
-        f'{C-0.86*R*math.sin(k)-2*i:.1f} Q {C+0.5*R*math.cos(k):.1f},'
-        f'{C-0.23*R*math.sin(k):.1f} {C:.1f},{C:.1f} Z" fill="url(#{fill})" '
-        f'stroke="{stroke}" stroke-width="1.2"/>'
-        for i, k in enumerate((0.35, 0.72, 1.15)))
-    body = (f'{leaf}<path d="M {spiral}" fill="none" stroke="url(#{fill})" '
-            f'stroke-width="{9*scale:.1f}" stroke-linecap="round"/>'
-            f'<path d="M {spiral}" fill="none" stroke="{stroke}" stroke-width="1"/>')
-    corners = []
-    for rot, (ox, oy) in ((0, (0, 0)), (90, (SIZE - BAND, 0)),
-                          (180, (SIZE - BAND, SIZE - BAND)),
-                          (270, (0, SIZE - BAND))):
-        corners.append(f'<g transform="translate({ox},{oy}) '
-                       f'rotate({rot} {C} {C})">{body}</g>')
-    return "".join(corners)
-
-
-def shell_crest(fill: str, stroke: str) -> str:
-    """A scallop shell at the top centre — the rococo cartouche."""
-    rays = "".join(
-        f'<path d="M 220,30 L {220 + 46*math.cos(a):.1f},'
-        f'{30 + 42*math.sin(a):.1f}" stroke="{stroke}" stroke-width="1.1"/>'
-        for a in [math.radians(d) for d in range(200, 341, 20)])
-    return (f'<path d="M 174,44 Q 220,-16 266,44 Q 220,26 174,44 Z" '
-            f'fill="url(#{fill})" stroke="{stroke}" stroke-width="1.4"/>{rays}'
-            f'<path d="M 174,{SIZE-44} Q 220,{SIZE+16} 266,{SIZE-44} '
-            f'Q 220,{SIZE-26} 174,{SIZE-44} Z" fill="url(#{fill})" '
-            f'stroke="{stroke}" stroke-width="1.4"/>')
-
-
-EDGES = {"beading": beading, "egg": egg_and_dart,
-         "fluting": fluting, "rope": ropework}
-
-
-# ---------------------------------------------------------------- profiles
-# (css class, palette, edge treatment, corner ornament, shell crest?)
-PROFILES = [
-    ("f-baroque",  "gold",     "egg",     "volute", True),
-    ("f-rococo",   "gold",     "beading", "volute", True),
-    ("f-gilt",     "paleGold", "egg",     "volute", False),
-    ("f-carved",   "gold",     "rope",    "volute", False),
-    ("f-silver",   "silver",   "beading", "volute", False),
-    ("f-ebony",    "ebony",    "fluting", None,     False),
-    ("f-plain",    "paleGold", "fluting", None,     False),
-    ("f-rose",     "rose",     "beading", None,     False),
+# The cross-section, as (position across the rail, brightness multiplier).
+# Outer arris -> crown -> cove -> fillet -> rabbet shadow.
+PROFILE = [
+    (0.00, 0.55), (0.05, 1.18), (0.13, 1.02), (0.24, 0.62),
+    (0.34, 0.74), (0.46, 1.06), (0.56, 0.88), (0.68, 0.66),
+    (0.78, 1.10), (0.88, 0.80), (1.00, 0.42),
 ]
 
 
-def build_svg(palette: str, edge: str, corner: str | None, crest: bool) -> str:
-    stops = PALETTES[palette]
-    dark = dark_of(stops)
-    defs = (grad(palette, stops)
-            + grad(palette + "Dark", [stops[0], stops[3], stops[0],
-                                      stops[0], stops[3], stops[0]])
-            + f'<radialGradient id="bead" cx="0.35" cy="0.3" r="0.8">'
-              f'<stop offset="0" stop-color="{stops[1]}"/>'
-              f'<stop offset="0.6" stop-color="{stops[2]}"/>'
-              f'<stop offset="1" stop-color="{stops[0]}"/></radialGradient>')
-    # the molding itself: a square annulus, filled with the sheen ramp
-    parts = [
-        f'<path fill-rule="evenodd" fill="url(#{palette})" '
-        f'd="M0,0 H{SIZE} V{SIZE} H0 Z M{BAND},{BAND} H{INNER} V{INNER} '
-        f'H{BAND} Z"/>',
-        f'<rect x="3" y="3" width="{SIZE-6}" height="{SIZE-6}" fill="none" '
-        f'stroke="{stops[1]}" stroke-opacity="0.35" stroke-width="2"/>',
-        f'<rect x="{BAND}" y="{BAND}" width="{INNER-BAND}" height="{INNER-BAND}" '
-        f'fill="none" stroke="{stops[2]}" stroke-width="3"/>',
-        f'<rect x="1" y="1" width="{SIZE-2}" height="{SIZE-2}" fill="none" '
-        f'stroke="{dark}" stroke-width="2"/>',
-    ]
-    if edge == "beading":
-        parts.append(beading("bead", dark))
+def hex_rgb(h: str) -> np.ndarray:
+    h = h.lstrip("#")
+    return np.array([int(h[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float64)
+
+
+def value_noise(shape, fx, fy, seed, octaves=4):
+    """Fractal value noise. fx/fy are cells across the canvas — making one far
+    larger than the other is what stretches the grain along the rail."""
+    rng = np.random.default_rng(seed)
+    h, w = shape
+    total = np.zeros((h, w))
+    amp, norm = 1.0, 0.0
+    for o in range(octaves):
+        gx = max(2, int(fx * (2 ** o)))
+        gy = max(2, int(fy * (2 ** o)))
+        grid = rng.random((gy + 1, gx + 1))
+        # bilinear upsample with a smoothstep so cells don't show as diamonds
+        yi = np.linspace(0, gy, h)
+        xi = np.linspace(0, gx, w)
+        y0, x0 = np.floor(yi).astype(int), np.floor(xi).astype(int)
+        y1, x1 = np.minimum(y0 + 1, gy), np.minimum(x0 + 1, gx)
+        ty, tx = yi - y0, xi - x0
+        ty = (ty * ty * (3 - 2 * ty))[:, None]
+        tx = (tx * tx * (3 - 2 * tx))[None, :]
+        a = grid[np.ix_(y0, x0)]
+        b = grid[np.ix_(y0, x1)]
+        c = grid[np.ix_(y1, x0)]
+        d = grid[np.ix_(y1, x1)]
+        total += amp * ((a * (1 - tx) + b * tx) * (1 - ty)
+                        + (c * (1 - tx) + d * tx) * ty)
+        norm += amp
+        amp *= 0.5
+    return total / norm
+
+
+def timber(shape, along_axis, seed, figure):
+    """A slab of wood grain. along_axis=0 means the grain runs horizontally.
+
+    Two layers: long stretched fibre, and cathedral arcs from a sine whose
+    phase is warped by low-frequency noise — the arcs are what stops it
+    reading as brushed metal."""
+    h, w = shape
+    # Frequencies must be scaled to the RAIL, not the canvas: a rail is only
+    # BAND px across, so noise specified per-canvas lands as a handful of fat
+    # blobs and the timber reads as watered silk. LINES is how many grain
+    # lines cross the rail; convert that to cells across the whole canvas.
+    # ~18 lines across a BAND-wide rail. Much finer than this and the fibre
+    # lands at pixel pitch, which aliases into corduroy rather than timber.
+    LINES = 18
+    long_side = w if along_axis == 0 else h
+    across = LINES * long_side / BAND
+    if along_axis == 0:                       # grain runs left-right
+        fibre = value_noise(shape, 2, across, seed, 2)
+        streak = value_noise(shape, 9, across * 0.3, seed + 7, 2)
+        pore = value_noise(shape, 40, across * 1.9, seed + 23, 1)
+        wander = value_noise(shape, 7, 3, seed + 55, 2)
+    else:                                     # grain runs top-bottom
+        fibre = value_noise(shape, across, 2, seed, 2)
+        streak = value_noise(shape, across * 0.3, 9, seed + 7, 2)
+        pore = value_noise(shape, across * 1.9, 40, seed + 23, 1)
+        wander = value_noise(shape, 3, 7, seed + 55, 2)
+
+    # Real fibre is never ruler-straight: displace the grain along its own
+    # width by a slow wander so the lines drift and occasionally converge,
+    # which is most of what separates timber from brushed metal.
+    yy, xx = np.mgrid[0:h, 0:w]
+    # subtle: a big displacement smears the carved profile into waves and
+    # the moulding stops reading as a solid, machined section
+    shift = ((wander - 0.5) * BAND * 0.16).astype(int)
+    if along_axis == 0:
+        fibre = fibre[np.clip(yy + shift, 0, h - 1), xx]
+        streak = streak[np.clip(yy + shift // 2, 0, h - 1), xx]
     else:
-        parts.append(EDGES[edge](palette, dark))
-    if crest:
-        parts.append(shell_crest(palette, dark))
-    if corner:
-        parts.append(volute(palette, dark))
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" '
-            f'viewBox="0 0 {SIZE} {SIZE}"><defs>{defs}</defs>'
-            + "".join(parts) + "</svg>")
+        fibre = fibre[yy, np.clip(xx + shift, 0, w - 1)]
+        streak = streak[yy, np.clip(xx + shift // 2, 0, w - 1)]
+
+    g = 0.58 * fibre + 0.26 * streak + 0.16 * pore
+    g = (1 - figure) * (0.7 * fibre + 0.3 * streak) + figure * g
+    g = (g - g.min()) / max(1e-6, g.max() - g.min())
+    # gamma rather than linear contrast: darkens the late-wood lines without
+    # blowing the light timber out to paper white
+    return np.clip(g ** 1.25, 0, 1)
 
 
-def data_uri(svg: str) -> str:
-    b64 = base64.b64encode(svg.encode()).decode()
-    return f'url("data:image/svg+xml;base64,{b64}")'
+def build_frame(wood) -> Image.Image:
+    base_h, dark_h, mid_h, crown_h, grain_amp, figure = wood
+    base, dark, mid, crown = (hex_rgb(c) for c in (base_h, dark_h, mid_h, crown_h))
+    N, B = SIZE, BAND
+    y, x = np.mgrid[0:N, 0:N].astype(np.float64)
+
+    # Which mitred rail owns each pixel — the 45-degree cuts are just the
+    # diagonals of the square.
+    top = (y <= x) & (y <= N - 1 - x)
+    bottom = (y >= x) & (y >= N - 1 - x)
+    left = (x < y) & (x <= N - 1 - y)
+    right = (x > y) & (x >= N - 1 - y)
+
+    # Distance across the rail, 0 at the outer edge, 1 at the rabbet.
+    t = np.zeros((N, N))
+    t[top] = (y / (B - 1))[top]
+    t[bottom] = ((N - 1 - y) / (B - 1))[bottom]
+    t[left] = (x / (B - 1))[left]
+    t[right] = ((N - 1 - x) / (B - 1))[right]
+    t = np.clip(t, 0, 1)
+
+    # The carved cross-section: brightness as a function of t.
+    ps = np.array([p for p, _ in PROFILE])
+    pv = np.array([v for _, v in PROFILE])
+    shade = np.interp(t, ps, pv)
+
+    # Per-rail lighting.
+    light = np.ones((N, N))
+    light[top] = RAIL_LIGHT["top"]
+    light[bottom] = RAIL_LIGHT["bottom"]
+    light[left] = RAIL_LIGHT["left"]
+    light[right] = RAIL_LIGHT["right"]
+
+    # Base colour blends toward the crown where the profile is lit, toward the
+    # deep shadow where it is not — so the timber changes hue, not just value.
+    k = np.clip((shade - 0.42) / 0.9, 0, 1)[..., None]
+    col = np.where(k > 0.5,
+                   mid + (crown - mid) * (k - 0.5) * 2,
+                   dark + (mid - dark) * k * 2)
+    col = col * (0.55 + 0.65 * shade)[..., None] * light[..., None]
+
+    # Grain: horizontal slab for the top/bottom rails, vertical for the sides,
+    # so the figure turns at every mitre.
+    gh = timber((N, N), 0, 11, figure)
+    gv = timber((N, N), 1, 29, figure)
+    g = np.where(top | bottom, gh, gv)
+    # centred on 1.0 so grain_amp is literally the swing: 0.5 => 0.5x .. 1.5x
+    col *= (1.0 + grain_amp * (g - 0.5) * 2.0)[..., None]
+
+    # The mitre seams themselves: a thin darkening along each diagonal.
+    d1 = np.abs(y - x)
+    d2 = np.abs(y - (N - 1 - x))
+    seam = np.minimum(d1, d2)
+    col *= (0.72 + 0.28 * np.clip(seam / 2.2, 0, 1))[..., None]
+
+    # Sharpen the two edges a real frame shows most: the outer arris and the
+    # inner lip against the picture.
+    edge = np.minimum.reduce([x, y, N - 1 - x, N - 1 - y])
+    col *= (0.5 + 0.5 * np.clip(edge / 1.6, 0, 1))[..., None]
+    inner = np.abs(t - 1.0) * (B - 1)
+    col *= (0.55 + 0.45 * np.clip(inner / 2.0, 0, 1))[..., None]
+
+    rgb = np.clip(col, 0, 255).astype(np.uint8)
+    alpha = np.where((x < B) | (x >= N - B) | (y < B) | (y >= N - B), 255, 0)
+    out = np.dstack([rgb, alpha.astype(np.uint8)])
+    return Image.fromarray(out, "RGBA")
+
+
+def data_uri(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f'url("data:image/png;base64,{b64}")'
 
 
 def main() -> None:
     css = ["/* GENERATED by tools/make_frames.py — do not hand-edit.",
-           "   Antique frame profiles for the gallery wall: a molding palette,",
-           "   an edge enrichment, and a corner ornament, from a reference",
-           "   board of real antique frames. */", ""]
-    for cls, palette, edge, corner, crest in PROFILES:
-        stops = PALETTES[palette]
-        svg = build_svg(palette, edge, corner, crest)
-        css.append(f".frame.{cls} {{")
-        css.append("  background:")
-        css.append("    repeating-linear-gradient(45deg, #0000001f 0 2px,"
-                   " #ffffff12 2px 5px),")
-        css.append(f"    linear-gradient(135deg, {stops[0]} 0%, {stops[1]} 20%,"
-                   f" {stops[2]} 42%, {stops[3]} 58%, {stops[4]} 76%,"
-                   f" {stops[5]} 100%);")
-        css.append(f"  border-image: {data_uri(svg)} {BAND} round;")
+           "   Timber picture frames: procedural grain and cathedral figure,",
+           "   a carved cross-section read as light across the moulding, and",
+           "   45-degree mitres where the grain turns. Raster, because SVG",
+           "   filters do not survive border-image rasterisation in WebView. */",
+           ""]
+    for name, wood in WOODS.items():
+        img = build_frame(wood)
+        base = wood[0]
+        css.append(f".frame.f-{name} {{")
+        css.append(f"  background: {base};")   # shows only in hairline gaps
+        # stretch, not round: the grain does not tile, so `round` shows a
+        # seam at every repeat. Stretching runs along the fibre, which is
+        # simply what a longer length of the same moulding looks like.
+        css.append(f"  border-image: {data_uri(img)} {BAND} stretch;")
         css.append("}")
         css.append("")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(css))
-    kb = OUT.stat().st_size / 1024
-    print(f"wrote {OUT} ({kb:.0f} KB, {len(PROFILES)} frame styles)")
+    print(f"wrote {OUT} ({OUT.stat().st_size/1024:.0f} KB, {len(WOODS)} frames)")
 
 
 if __name__ == "__main__":
