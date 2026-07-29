@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# constellation — the things only a human can do.
+#
+# Everything here is deliberately manual: the pipeline decides what it can and
+# parks the rest for you. Nothing in this script deletes anything without you
+# naming it explicitly.
+#
+#   constellation status              what the pipeline is doing right now
+#   constellation review              list the vault review queue
+#   constellation sheet               contact sheets of the review queue to look at
+#   constellation ok   N [N...]       verdict: fine — back into the library
+#   constellation vault N [N...]      verdict: belongs in the vault
+#   constellation nuke  N [N...]      verdict: garbage — shredded, no undo
+#   constellation sheets-done         wipe the contact sheets
+#   constellation open | close        unlock / lock the vault
+#   constellation clean               run the document + screenshot cleanup now
+set -uo pipefail
+
+MV="/opt/memoryvault/venv/bin/python $HOME/constellation/MemoryVault/.scripts/mvault"
+PY="/opt/memoryvault/venv/bin/python"
+DB="~/Constellation/library/photos.db"
+REVIEW="/mnt/vault/review"
+# Contact sheets are made FROM vault content, so they live inside the vault —
+# writing them to $HOME would leave plaintext copies of screened-out material
+# sitting on an unencrypted disk after the vault is closed.
+SHEETS="/mnt/vault/review-sheets"
+INDEX="$HOME/.review-index"
+
+# the review queue is stable only while nothing else moves it; snapshot the
+# order once so a number always means the same photo across commands
+build_index() {
+  mountpoint -q /mnt/vault || { echo "vault is locked — run: constellation open"; exit 1; }
+  find "$REVIEW" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort > "$INDEX"
+}
+
+name_for() {  # number -> filename
+  sed -n "${1}p" "$INDEX"
+}
+
+case "${1:-status}" in
+
+status)
+  echo "── pipelines ──"
+  pgrep -af "mvault (tag|screen|describe|faces|ingest|curate)|nightly-pipeline" \
+    | grep -v pgrep | sed 's|.*mvault|  mvault|; s|.*bash |  |' || echo "  (idle)"
+  echo "── load ──"; uptime | sed 's/.*load/  load/'
+  echo "── library ──"
+  $PY - <<'PYEOF'
+import sqlite3
+c = sqlite3.connect("file:~/Constellation/library/photos.db?mode=ro", uri=True)
+q = lambda s: c.execute(s).fetchone()[0]
+print("  photos      ", q("select count(*) from photos where media_kind='photo'"))
+print("  videos      ", q("select count(*) from photos where media_kind='video'"))
+print("  captioned   ", q("select count(*) from descriptions"))
+print("  faces done  ", q("select count(*) from photos where faces_scanned=1"))
+print("  curation    ", dict(c.execute(
+    "select value,count(*) from tags where dimension='curation' group by 1")))
+PYEOF
+  echo "── awaiting your eyes ──"
+  if mountpoint -q /mnt/vault; then
+    echo "  vault review  $(find /mnt/vault/review -maxdepth 1 -type f 2>/dev/null | wc -l)"
+  else
+    echo "  vault review  (vault locked)"
+  fi
+  ;;
+
+review)
+  build_index
+  echo "$(wc -l < "$INDEX") photo(s) awaiting review:"
+  nl -w4 -s'  ' "$INDEX"
+  echo
+  echo "Look at them:  constellation sheet"
+  echo "Then:          constellation ok 3 7 12   |  vault 4   |  nuke 9"
+  ;;
+
+sheet)
+  build_index
+  n=$(wc -l < "$INDEX")
+  [ "$n" -eq 0 ] && { echo "review queue is empty"; exit 0; }
+  mkdir -p "$SHEETS"; rm -f "$SHEETS"/sheet-*.jpg
+  $PY - "$INDEX" "$REVIEW" "$SHEETS" <<'PYEOF'
+import sys, pathlib
+from PIL import Image, ImageDraw
+index, review, out = (pathlib.Path(a) for a in sys.argv[1:4])
+names = index.read_text().split("\n")
+names = [n for n in names if n]
+CELL, COLS, ROWS = 320, 5, 4        # 20 per sheet, numbered to match the list
+per = COLS * ROWS
+for s in range((len(names) + per - 1) // per):
+    chunk = names[s*per:(s+1)*per]
+    sheet = Image.new("RGB", (COLS*CELL, ROWS*CELL), "#111")
+    d = ImageDraw.Draw(sheet)
+    for i, nm in enumerate(chunk):
+        num = s*per + i + 1
+        x, y = (i % COLS)*CELL, (i // COLS)*CELL
+        try:
+            im = Image.open(review / nm); im.thumbnail((CELL-10, CELL-34))
+            sheet.paste(im.convert("RGB"), (x+5, y+28))
+        except Exception as e:
+            d.text((x+8, y+40), "unreadable", fill="#f88")
+        d.rectangle([x+2, y+2, x+CELL-2, y+24], fill="#1d3550")
+        d.text((x+8, y+8), "%d  %s" % (num, nm[:34]), fill="#cfe8fa")
+    p = out / ("sheet-%02d.jpg" % (s+1))
+    sheet.save(p, quality=80)
+    print("  ", p)
+PYEOF
+  echo
+  echo "Look at them (vault must stay open):"
+  echo "  scp 'you@your-constellation-box:$SHEETS/*.jpg' ."
+  echo "They are inside the vault, so closing it puts them away again."
+  echo "Wipe them early with:  constellation sheets-done"
+  ;;
+
+ok|vault|nuke)
+  verdict="$1"; shift
+  [ $# -eq 0 ] && { echo "give me numbers, e.g. constellation $verdict 3 7 12"; exit 1; }
+  [ -s "$INDEX" ] || { echo "run 'constellation review' first"; exit 1; }
+  files=()
+  for n in "$@"; do
+    f="$(name_for "$n")"
+    [ -z "$f" ] && { echo "no photo number $n"; exit 1; }
+    files+=("$f")
+  done
+  case "$verdict" in
+    ok)    flag="--release" ;;
+    vault) flag="--keep" ;;
+    nuke)
+      echo "About to SHRED ${#files[@]} file(s) — there is no undo:"
+      printf '   %s\n' "${files[@]}"
+      read -r -p "Type DELETE to confirm: " word
+      [ "$word" = "DELETE" ] || { echo "aborted"; exit 1; }
+      flag="--delete" ;;
+  esac
+  $MV vault review $flag "${files[@]}"
+  build_index          # renumber, since the queue just changed
+  echo "queue now: $(wc -l < "$INDEX")"
+  ;;
+
+sheets-done)
+  mountpoint -q /mnt/vault && rm -rf "$SHEETS" && echo "contact sheets removed"
+  ;;
+
+open)   $MV vault open ;;
+close)  $MV vault close ;;
+
+clean)
+  echo "running screenshot triage then the document scan (both reversible)…"
+  $MV curate --screenshots
+  $MV curate --vision-docs
+  ;;
+
+*) sed -n '2,16p' "$0" ;;
+esac

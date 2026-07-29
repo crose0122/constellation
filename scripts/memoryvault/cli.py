@@ -186,6 +186,28 @@ def cmd_vault(args):
         vault.close_vault()
     elif args.action == "status":
         print("mounted" if vault.is_mounted() else "not mounted")
+    elif args.action == "review":
+        # The screener routes anything it can't call confidently into
+        # vault/review. Only a human clears that queue — these three verdicts
+        # existed in vault.py but were reachable from nothing until now.
+        if not vault.is_mounted():
+            print("vault is locked — run: mvault vault open")
+            return
+        rdir = config.VAULT_MOUNT / "review"
+        names = sorted(f.name for f in rdir.iterdir() if f.is_file()) \
+            if rdir.is_dir() else []
+        if args.release or args.keep or args.delete:
+            with _conn() as conn:
+                for fn in (args.release or []):
+                    print(vault.release_from_review(conn, fn))
+                for fn in (args.keep or []):
+                    print(vault.keep_in_vault(fn))
+                for fn in (args.delete or []):
+                    print(vault.delete_from_review(fn))
+            return
+        print(f"{len(names)} photo(s) awaiting review in {rdir}")
+        for n in names:
+            print("  ", n)
 
 
 def cmd_calibrate(args):
@@ -286,8 +308,15 @@ def main(argv=None):
     r.add_argument("--approve-group", type=int)
 
     v = sub.add_parser("vault", help="LUKS vault management")
-    v.add_argument("action", choices=["create", "open", "close", "status"])
+    v.add_argument("action",
+                   choices=["create", "open", "close", "status", "review"])
     v.add_argument("--size", type=int, default=50, help="GB (create only)")
+    v.add_argument("--release", nargs="*", metavar="FILE",
+                   help="review verdict: it's fine — back into the library")
+    v.add_argument("--keep", nargs="*", metavar="FILE",
+                   help="review verdict: it belongs in the vault")
+    v.add_argument("--delete", nargs="*", metavar="FILE",
+                   help="review verdict: garbage — shred it (no undo)")
 
     c = sub.add_parser("calibrate", help="sweep screening thresholds on labeled samples")
     c.add_argument("--safe", required=True, help="folder of known-safe photos")
