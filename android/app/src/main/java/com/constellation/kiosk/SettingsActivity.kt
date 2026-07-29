@@ -30,12 +30,15 @@ class SettingsActivity : Activity() {
         })
         val input = EditText(this).apply {
             setText(Prefs.url(this@SettingsActivity))
+            hint = "http://<your-server>:8484/?lite=1"
             setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
             layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)
         }
         root.addView(input)
         root.addView(TextView(this).apply {
-            text = "e.g. http://10.0.0.5:8484/?lite=1  (use ?lite=1 on low-end devices)"
+            text = "The address you open Constellation at on your home network — " +
+                "e.g. http://10.0.0.5:8484/?lite=1\n" +
+                "Add ?lite=1 on low-powered boxes for a lighter render path."
             setTextColor(Color.parseColor("#7f9bb3")); textSize = 12f
         })
         root.addView(Button(this).apply {

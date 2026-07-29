@@ -7,12 +7,22 @@ android {
     namespace = "com.constellation.kiosk"
     compileSdk = 34
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.constellation.kiosk"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        // Bake in your server so the app needs no setup on first run:
+        //   ./gradlew :app:assembleDebug -PconstellationUrl=http://10.0.0.5:8484/?lite=1
+        // Left empty, the app opens Settings on first launch instead.
+        val bakedUrl = (project.findProperty("constellationUrl") as String?).orEmpty()
+        buildConfigField("String", "DEFAULT_URL", "\"$bakedUrl\"")
     }
 
     buildTypes {
