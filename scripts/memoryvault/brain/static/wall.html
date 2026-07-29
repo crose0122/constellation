@@ -83,10 +83,40 @@
     font-size: 0.7rem; color: #d9c9a855;
   }
   #hint a { color: #d9c9a888; }
+
+/* Tap a picture on the wall to open it here: full-screen, with the same
+   actions the gallery offers. The wall keeps breathing behind it, but the
+   frame you opened is pinned so it can't be swapped out under your finger. */
+#wlb {
+  position: fixed; inset: 0; z-index: 50; display: none;
+  background: rgba(4, 8, 14, 0.94);
+  align-items: center; justify-content: center; flex-direction: column;
+  gap: 1rem; padding: 2vmin;
+}
+#wlb.on { display: flex; }
+#wlb .media { max-width: 94vw; max-height: 78vh; box-shadow: 0 2rem 5rem #000; }
+#wlb .bar { display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center; }
+#wlb button {
+  pointer-events: auto; font: inherit; font-size: 0.95rem; cursor: pointer;
+  padding: 0.55rem 1.3rem; border-radius: 999px;
+  background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+}
+#wlb button.danger { background: #3b0d0d; color: #fecaca; border-color: #7f1d1d; }
+#wlb button.vault  { background: #2e1065; color: #ddd6fe; border-color: #4c1d95; }
+#wlb .meta { color: #8fa9c0; font-size: 0.85rem; text-align: center; }
 </style>
 </head>
 <body>
 <div id="wall"></div>
+<div id="wlb">
+  <div id="wlbHolder"></div>
+  <div class="meta" id="wlbMeta"></div>
+  <div class="bar">
+    <button id="wlbClose">close</button>
+    <button id="wlbRemove" class="danger">Remove from display</button>
+    <button id="wlbVault" class="vault">Move to Personal Vault</button>
+  </div>
+</div>
 <div id="hint"><a href="/">← constellation</a></div>
 <script>
 const qs = new URLSearchParams(location.search);
@@ -170,6 +200,7 @@ function buildWall() {
 }
 
 function fillSlot(slot, instant) {
+  if (slot.pinned) return;      // open in the lightbox — leave it alone
   const item = nextItem();
   if (!item) return;
   slot.cur = item;
@@ -189,6 +220,8 @@ function fillSlot(slot, instant) {
     el.src = item.display || item.thumb;   // poster for a capped video
     el.loading = "eager";
   }
+  el.style.cursor = "pointer";
+  el.addEventListener("click", (ev) => { ev.stopPropagation(); openLightbox(slot); });
   const show = () => requestAnimationFrame(() => el.classList.add("on"));
   if (isVideo) show(); else el.onload = show;
   // crossfade: new element fades in over the old, then old is removed
@@ -224,14 +257,107 @@ function start() {
 let rt = null;
 addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(start, 400); });
 
+/* ---------- lightbox: open one picture, act on it ---------- */
+const wlb = document.getElementById("wlb");
+const wlbHolder = document.getElementById("wlbHolder");
+const wlbMeta = document.getElementById("wlbMeta");
+let wlbSlot = null;
+
+function openLightbox(slot) {
+  const item = slot.cur;
+  if (!item) return;
+  wlbSlot = slot;
+  slot.pinned = true;                 // don't cycle this frame while it's open
+  wlbHolder.textContent = "";
+  const isVid = item.kind === "video" && item.video;
+  const el = document.createElement(isVid ? "video" : "img");
+  el.className = "media";
+  if (isVid) {
+    el.src = item.video; el.controls = true; el.autoplay = true;
+    el.loop = true; el.playsInline = true;
+  } else {
+    el.src = item.display || item.thumb;
+  }
+  wlbHolder.appendChild(el);
+  const when = item.taken_at
+    ? new Date(item.taken_at).toLocaleDateString(undefined,
+        { year: "numeric", month: "long", day: "numeric" })
+    : "";
+  // label is often just the raw date — don't print the same day twice
+  const extra = (item.label || "").trim();
+  const dupe = !extra || /^\d{4}-\d{2}-\d{2}/.test(extra);
+  wlbMeta.textContent = [when, dupe ? "" : extra].filter(Boolean).join("  ·  ");
+  wlb.classList.add("on");
+}
+
+function closeLightbox() {
+  wlb.classList.remove("on");
+  wlbHolder.textContent = "";         // stops a playing video
+  if (wlbSlot) wlbSlot.pinned = false;
+  wlbSlot = null;
+}
+
+// drop the photo from this slot and from the pool, so it doesn't come back
+function retireCurrent() {
+  if (!wlbSlot) return;
+  const gone = wlbSlot.cur;
+  if (gone) {
+    const i = pool.findIndex((x) => x.id === gone.id);
+    if (i >= 0) pool.splice(i, 1);
+  }
+  const slot = wlbSlot;
+  closeLightbox();
+  fillSlot(slot, false);
+}
+
+document.getElementById("wlbClose").addEventListener("click", closeLightbox);
+wlb.addEventListener("click", (ev) => { if (ev.target === wlb) closeLightbox(); });
+addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeLightbox(); });
+
+document.getElementById("wlbRemove").addEventListener("click", async () => {
+  if (!wlbSlot || !wlbSlot.cur) return;
+  const id = wlbSlot.cur.id;
+  try {
+    const r = await fetch(`/api/photo/remove?id=${id}`);
+    if (!r.ok) throw new Error(await r.text());
+    retireCurrent();
+  } catch (e) { alert("Could not remove it: " + e.message); }
+});
+
+document.getElementById("wlbVault").addEventListener("click", async () => {
+  if (!wlbSlot || !wlbSlot.cur) return;
+  const id = wlbSlot.cur.id;
+  const dest = confirm(
+    "Move into the Personal Vault.\n\nOK = Casey's folder · Cancel then OK = Other")
+    ? "casey"
+    : (confirm("Move to the Other folder instead?") ? "other" : null);
+  if (!dest) return;
+  try {
+    const r = await fetch(`/api/photo/vault?id=${id}&dest=${dest}`);
+    if (r.status === 409) { alert("The vault is locked — open it first."); return; }
+    if (!r.ok) throw new Error(await r.text());
+    retireCurrent();
+  } catch (e) { alert("Could not vault it: " + e.message); }
+});
+
 // kiosk cycle: the constellation sends us here for a few minutes, then we
 // hand back so it can show the sphere again. Any tap escapes to explore.
 const KIOSK = qs.get("kiosk") === "1";
 const WALL_MS = 5 * 60 * 1000;
 if (KIOSK) {
   const home = "/" + (LITE ? "?lite=1" : "");
-  setTimeout(() => { location.href = home; }, WALL_MS);
-  addEventListener("pointerdown", () => { location.href = home; }, { once: true });
+  // hand back only if nobody is looking at a picture; otherwise wait and retry
+  const goHome = () => {
+    if (wlb.classList.contains("on")) { setTimeout(goHome, 30000); return; }
+    location.href = home;
+  };
+  setTimeout(goHome, WALL_MS);
+  // a tap on the wall background escapes to explore; a tap on a picture opens
+  // it instead (that handler stops the event before it reaches us)
+  addEventListener("pointerdown", (ev) => {
+    if (wlb.contains(ev.target) || wlb.classList.contains("on")) return;
+    location.href = home;
+  });
 }
 
 (async function boot() {

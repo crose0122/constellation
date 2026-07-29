@@ -644,43 +644,64 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, b'{"error": "bad request"}',
                                "application/json")
                 else:
+                    # Order matters. This used to unlink the files first and
+                    # delete rows afterwards, so when the row delete hit a
+                    # foreign key it had already destroyed the originals and
+                    # left the library half-purged. The database work now
+                    # commits FIRST, and files are only removed once the rows
+                    # they belong to are certainly gone.
                     wconn = connect(config.DB_PATH)
+                    doomed = []
                     try:
                         wconn.execute(
                             "CREATE TABLE IF NOT EXISTS purged ("
                             "sha256 TEXT PRIMARY KEY, ts TEXT)")
-                        rows = wconn.execute(
-                            "SELECT p.id, p.sha256, p.library_path FROM "
-                            "photos p JOIN tags t ON t.photo_id = p.id "
-                            "WHERE t.dimension = 'curation' AND t.value = ?",
-                            (binv,)).fetchall()
-                        n = 0
+                        # purge only what the reviewer is actually looking at:
+                        # the page filters by reason, so the button must too
+                        preason = (q.get("reason", [""])[0] or "").strip()
+                        psql = ("SELECT p.id, p.sha256, p.library_path FROM "
+                                "photos p JOIN tags t ON t.photo_id = p.id "
+                                "WHERE t.dimension = 'curation' AND t.value = ? ")
+                        pargs: list = [binv]
+                        if preason:
+                            psql += ("AND EXISTS (SELECT 1 FROM tags r WHERE "
+                                     "r.photo_id = p.id AND r.dimension = "
+                                     "'curation_reason' AND r.value = ?) ")
+                            pargs.append(preason)
+                        rows = wconn.execute(psql, pargs).fetchall()
                         for r in rows:
-                            for f in [
-                                config.LIBRARY_ROOT / (r["library_path"] or "x"),
-                                config.LIBRARY_ROOT / "thumbnails" /
-                                    f"{r['sha256'][:16]}.jpg",
-                                config.LIBRARY_ROOT / "display" /
-                                    f"{r['sha256'][:16]}.jpg",
-                            ]:
-                                try:
-                                    f.unlink()
-                                except OSError:
-                                    pass
-                            for fc in wconn.execute(
+                            face_ids = [
+                                fc["id"] for fc in wconn.execute(
                                     "SELECT id FROM faces WHERE photo_id = ?",
-                                    (r["id"],)).fetchall():
-                                try:
-                                    (config.LIBRARY_ROOT / "face-crops" /
-                                     f"{fc['id']}.jpg").unlink()
-                                except OSError:
-                                    pass
-                            for tbl, col in (("tags", "photo_id"),
+                                    (r["id"],)).fetchall()]
+                            # Children first, and in dependency order.
+                            # duplicate_members hangs off files(id) and
+                            # duplicate_groups(id), not photos — deleting a
+                            # photo's files with member rows still pointing at
+                            # them is one of the ways this raised FOREIGN KEY
+                            # constraint failed; embeddings and
+                            # duplicate_groups were simply never deleted.
+                            wconn.execute(
+                                "DELETE FROM duplicate_members WHERE file_id "
+                                "IN (SELECT id FROM files WHERE photo_id = ?)",
+                                (r["id"],))
+                            wconn.execute(
+                                "DELETE FROM duplicate_members WHERE group_id "
+                                "IN (SELECT id FROM duplicate_groups WHERE "
+                                "keeper_photo_id = ?)", (r["id"],))
+                            for tbl, col in (("duplicate_groups",
+                                              "keeper_photo_id"),
+                                             ("tags", "photo_id"),
                                              ("faces", "photo_id"),
-                                             ("files", "photo_id")):
-                                wconn.execute(
-                                    f"DELETE FROM {tbl} WHERE {col} = ?",
-                                    (r["id"],))
+                                             ("files", "photo_id"),
+                                             ("embeddings", "photo_id"),
+                                             ("descriptions", "photo_id")):
+                                try:
+                                    wconn.execute(
+                                        f"DELETE FROM {tbl} WHERE {col} = ?",
+                                        (r["id"],))
+                                except sqlite3.OperationalError:
+                                    pass        # table absent in this schema
                             wconn.execute(
                                 "DELETE FROM photo_edges WHERE "
                                 "photo_id_a = ? OR photo_id_b = ?",
@@ -690,11 +711,28 @@ class Handler(BaseHTTPRequestHandler):
                                 "(?, datetime('now'))", (r["sha256"],))
                             wconn.execute(
                                 "DELETE FROM photos WHERE id = ?", (r["id"],))
-                            n += 1
+                            doomed.append((r["sha256"], r["library_path"],
+                                           face_ids))
                         wconn.commit()
+                    except Exception:
+                        wconn.rollback()    # nothing deleted, nothing unlinked
+                        raise
                     finally:
                         wconn.close()
-                    self._json({"purged": n, "bin": binv})
+                    # committed — now the files may go
+                    for sha, lib, face_ids in doomed:
+                        targets = [
+                            config.LIBRARY_ROOT / (lib or "x"),
+                            config.LIBRARY_ROOT / "thumbnails" / f"{sha[:16]}.jpg",
+                            config.LIBRARY_ROOT / "display" / f"{sha[:16]}.jpg",
+                        ] + [config.LIBRARY_ROOT / "face-crops" / f"{i}.jpg"
+                             for i in face_ids]
+                        for f in targets:
+                            try:
+                                f.unlink()
+                            except OSError:
+                                pass
+                    self._json({"purged": len(doomed), "bin": binv})
             elif url.path == "/api/purged":
                 try:
                     rows = conn.execute("SELECT sha256 FROM purged").fetchall()
@@ -834,18 +872,43 @@ class Handler(BaseHTTPRequestHandler):
                 binv = q.get("v", ["Trash"])[0]
                 if binv not in ("Trash", "Removed", "Delete"):
                     binv = "Trash"
-                rows = conn.execute(
+                # optional reason filter — a bin of several thousand is only
+                # reviewable one reason at a time ("show me just the receipts")
+                reason = (q.get("reason", [""])[0] or "").strip()
+                sql = (
                     "SELECT p.id, p.sha256, p.width, p.height, "
                     " (SELECT value FROM tags WHERE photo_id = p.id "
                     "  AND dimension = 'curation_reason') AS reason "
                     "FROM photos p JOIN tags t ON t.photo_id = p.id "
-                    "WHERE t.dimension = 'curation' AND t.value = ? "
-                    "ORDER BY p.width * p.height DESC LIMIT ? OFFSET ?",
-                    (binv, lim, off)).fetchall()
-                total = conn.execute(
-                    "SELECT COUNT(*) c FROM tags WHERE dimension = 'curation' "
-                    "AND value = ?", (binv,)).fetchone()["c"]
-                self._json({"total": total, "offset": off, "photos": [
+                    "WHERE t.dimension = 'curation' AND t.value = ? ")
+                params: list = [binv]
+                csql = ("SELECT COUNT(*) c FROM photos p JOIN tags t "
+                        "ON t.photo_id = p.id WHERE t.dimension = 'curation' "
+                        "AND t.value = ? ")
+                cparams: list = [binv]
+                if reason:
+                    clause = ("AND EXISTS (SELECT 1 FROM tags r WHERE "
+                              "r.photo_id = p.id AND r.dimension = "
+                              "'curation_reason' AND r.value = ?) ")
+                    sql += clause
+                    csql += clause
+                    params.append(reason)
+                    cparams.append(reason)
+                sql += "ORDER BY p.width * p.height DESC LIMIT ? OFFSET ?"
+                params += [lim, off]
+                rows = conn.execute(sql, params).fetchall()
+                total = conn.execute(csql, cparams).fetchone()["c"]
+                # what reasons exist in this bin, for the filter chips
+                reasons = [
+                    {"value": r["value"], "count": r["c"]}
+                    for r in conn.execute(
+                        "SELECT r.value, COUNT(*) c FROM tags r "
+                        "JOIN tags t ON t.photo_id = r.photo_id "
+                        "AND t.dimension = 'curation' AND t.value = ? "
+                        "WHERE r.dimension = 'curation_reason' "
+                        "GROUP BY r.value ORDER BY c DESC", (binv,))]
+                self._json({"total": total, "offset": off,
+                            "reason": reason, "reasons": reasons, "photos": [
                     {"id": r["id"], "thumb": f"/thumb/{r['sha256'][:16]}.jpg",
                      "display": f"/display/{r['sha256'][:16]}.jpg",
                      "dims": f"{r['width']}x{r['height']}",

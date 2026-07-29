@@ -52,10 +52,11 @@
 <body>
 <h1 id="binTitle"></h1>
 <div class="tabs" id="tabs"></div>
+<div class="tabs" id="reasons"></div>
 <p class="sub" id="count"></p>
 <button id="purgeAll" style="display:block;margin:0 0 1rem;padding:0.6rem 1.4rem;
   background:#450a0a;color:#fecaca;border:1px solid #7f1d1d;border-radius:999px;
-  cursor:pointer;font-weight:600">⚠ Permanently delete everything in this bin</button>
+  cursor:pointer;font-weight:600" data-base="⚠ Permanently delete">⚠ Permanently delete everything in this bin</button>
 <div class="grid" id="grid"></div>
 <button id="more">load more</button>
 <div id="lb" class="hidden"><img id="lbImg" alt=""></div>
@@ -66,7 +67,9 @@ const BINS = {
   Removed: { tab: "📤 Removed",     title: "📤 Removed photos — restore anything you want back" },
   Delete:  { tab: "☠ Marked for deletion", title: "☠ Marked for permanent deletion — purge below when you're sure" },
 };
-let bin = new URLSearchParams(location.search).get("v");
+const params = new URLSearchParams(location.search);
+let reason = params.get("reason") || "";
+let bin = params.get("v");
 if (!(bin in BINS)) bin = "Trash";
 document.getElementById("binTitle").textContent = BINS[bin].title;
 const tabs = document.getElementById("tabs");
@@ -92,10 +95,44 @@ function actBtn(cls, label, fn) {
   return b;
 }
 
+// Reason chips. A bin of several thousand is only reviewable one reason at a
+// time — "just the receipts", "just the tiny ones" — so each curation_reason
+// present in this bin becomes a filter.
+let chipsBuilt = false;
+function buildReasonChips(reasons) {
+  if (chipsBuilt) return;
+  chipsBuilt = true;
+  const box = document.getElementById("reasons");
+  const href = (r) => {
+    const u = new URLSearchParams();
+    if (bin !== "Trash") u.set("v", bin);
+    if (r) u.set("reason", r);
+    const qs = u.toString();
+    return "/curation" + (qs ? "?" + qs : "");
+  };
+  const all = document.createElement("a");
+  all.textContent = "all reasons";
+  all.href = href("");
+  if (!reason) all.className = "on";
+  box.appendChild(all);
+  for (const r of reasons) {
+    const a = document.createElement("a");
+    a.textContent = `${r.value} (${r.count.toLocaleString()})`;
+    a.href = href(r.value);
+    if (r.value === reason) a.className = "on";
+    box.appendChild(a);
+  }
+}
+
 async function load() {
-  const res = await fetch(`/api/curation?offset=${offset}&limit=60&v=${bin}`);
+  const res = await fetch(`/api/curation?offset=${offset}&limit=60&v=${bin}`
+    + (reason ? `&reason=${encodeURIComponent(reason)}` : ""));
   const d = await res.json();
   total = d.total;
+  buildReasonChips(d.reasons || []);
+  document.getElementById("purgeAll").textContent = reason
+    ? `⚠ Permanently delete the ${total.toLocaleString()} "${reason}" photos`
+    : "⚠ Permanently delete everything in this bin";
   document.getElementById("count").textContent =
     `${total.toLocaleString()} items in this bin — biggest first. Tap a photo to view it full-screen.`;
   const grid = document.getElementById("grid");
@@ -149,18 +186,23 @@ async function load() {
     offset >= total ? "none" : "block";
 }
 document.getElementById("purgeAll").addEventListener("click", async () => {
+  // the purge follows the reason filter, so say exactly what will go
+  const scope = reason ? `${total ?? "?"} "${reason}" photos`
+                       : `all ${total ?? "?"} photos`;
   const word = prompt(
-    `This PERMANENTLY deletes all ${total ?? "?"} photos in the ${bin} bin ` +
+    `This PERMANENTLY deletes ${scope} in the ${bin} bin ` +
     `from the library, thumbnails, database, and staging — no undo, no bin, gone.\n\n` +
     `Type DELETE to confirm:`);
   if (word !== "DELETE") return;
-  const r = await fetch(`/api/purge?bin=${bin}&confirm=DELETE`);
+  const r = await fetch(`/api/purge?bin=${bin}&confirm=DELETE`
+    + (reason ? `&reason=${encodeURIComponent(reason)}` : ""));
   if (r.ok) {
     const d = await r.json();
     alert(`${d.purged} photos permanently deleted.`);
     location.reload();
   } else {
-    alert("Purge failed — nothing was deleted.");
+    const detail = await r.text().catch(() => "");
+    alert("Purge failed — nothing was deleted.\n\n" + detail.slice(0, 300));
   }
 });
 document.getElementById("more").addEventListener("click", load);
