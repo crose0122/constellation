@@ -112,13 +112,15 @@ def cmd_faces(args):
 
 
 def cmd_curate(args):
-    from .curate import curate, rescue, vision_docs
+    from .curate import curate, live_photos, rescue, vision_docs
 
     with _conn() as conn:
         if getattr(args, "vision_docs", False):
             print(vision_docs(conn, shard=args.shard, limit=args.limit))
         elif getattr(args, "rescue", False):
             print(rescue(conn, shard=args.shard, limit=args.limit))
+        elif getattr(args, "live_photos", False):
+            print(live_photos(conn))
         else:
             print(curate(conn))
 
@@ -266,6 +268,8 @@ def main(argv=None):
     cu.add_argument("--rescue", action="store_true",
                     help="GPU pass: model-review the Trash bin, flip real "
                          "photos to Kept")
+    cu.add_argument("--live-photos", action="store_true", dest="live_photos",
+                    help="hide iPhone Live Photo motion clips (kept, restorable)")
     cu.add_argument("--shard")
     cu.add_argument("--limit", type=int)
     fa = sub.add_parser("faces", help="face detection + clustering (InsightFace)")

@@ -5,6 +5,10 @@
    Tap a category → its photos; tap a photo → the photo-level pathway view.
    Hand-rolled canvas; nothing external is loaded. */
 
+// Performance mode for weak displays (budget Android-TV boxes, etc.). Starts
+// on if ?lite is in the URL; otherwise auto-enables when the frame rate tanks.
+let LITE = /(?:\?|&)lite\b/.test(location.search);
+
 const REL_COLORS = {
   "same-person": "#e8b64c",
   "same-place": "#5aa2e0",
@@ -69,8 +73,9 @@ const bg = document.createElement("canvas");
 
 function resize() {
   // full native density: the frame loop is baked-layer blits now, so
-  // retina sharpness costs little (was capped at 1.75 in the shadowBlur era)
-  DPR = Math.min(window.devicePixelRatio || 1, 3);
+  // cap resolution: 3x DPR on a 4K TV renders ~25M pixels/frame and crushes
+  // budget boxes. 2x is plenty; LITE (weak device / ?lite) drops to 1x.
+  DPR = Math.min(window.devicePixelRatio || 1, LITE ? 1 : 2);
   // layout viewport (what position:fixed spans) — stable under pinch-zoom,
   // unlike innerWidth/visualViewport which track the zoomed visible region
   W = document.documentElement.clientWidth || window.innerWidth;
@@ -194,6 +199,9 @@ function setRadius(n, baseR) {
 const SWAP_MS = 5 * 60 * 1000;
 
 function assignPhoto(n) {
+  // photo textures on the stars are the most expensive per-frame draw; a weak
+  // device (auto-detected, or ?lite) shows the glowing stars without them
+  if (LITE) { n.nextSwap = performance.now() + SWAP_MS; return; }
   const url = n.core
     ? "/api/catphoto?family=1"
     : `/api/catphoto?dim=${encodeURIComponent(n.dim)}&value=${encodeURIComponent(n.value)}`;
@@ -227,7 +235,7 @@ function layoutCategories() {
   if (!ns.length) return;
   const nsAll = ns.filter((n) => !n.core);
   ns.length = 0; ns.push(...nsAll);
-  // cluster by dimension (Elliot's community-graph reference): contiguous
+  // cluster by dimension (community-graph reference): contiguous
   // Fibonacci-sphere runs put same-hued categories in neighborhoods, so
   // inter-community bundles emerge naturally
   ns.sort((a, b) => (a.dim || "").localeCompare(b.dim || "")
@@ -1247,7 +1255,25 @@ function draw() {
   }
 }
 
-function loop() {
+// frame pacing + auto-lite: if the device can't hold a decent frame rate for a
+// sustained stretch, drop to LITE (1x resolution, no photo textures, 30fps cap)
+let _lastFrame = 0, _slowFrames = 0, _liteTripped = false;
+function goLite() {
+  if (_liteTripped) return;
+  _liteTripped = true; LITE = true;
+  for (const n of nodes.values()) { n.imgNext = n.img = null; }
+  if (typeof core === "object" && core) core.img = core.imgNext = null;
+  resize();   // re-render at DPR 1
+}
+function loop(ts) {
+  ts = ts || 0;
+  const dt = ts - _lastFrame;
+  if (LITE && dt < 30) { requestAnimationFrame(loop); return; }   // ~30fps cap
+  if (!LITE && _lastFrame) {
+    if (dt > 45) { if (++_slowFrames > 90) goLite(); }            // ~1.5s of <22fps
+    else _slowFrames = Math.max(0, _slowFrames - 2);
+  }
+  _lastFrame = ts;
   step();
   draw();
   requestAnimationFrame(loop);
@@ -1532,14 +1558,22 @@ var kioskTimer = null;
 function kioskNet() {
   if (!kiosk) return;
   stopMemories();
-  kioskTimer = setTimeout(kioskShow, 60 * 1000);
+  kioskTimer = setTimeout(kioskShow, 60 * 1000);        // 1 min of the sphere
 }
+// The full loop (persisted across the wall page): sphere 1m -> slideshow 5m ->
+// sphere 1m -> wall 5m -> repeat. `kioskNext` alternates what comes after the
+// sphere; the wall (a separate page) returns here and we pick up at slideshow.
 function kioskShow() {
   if (!kiosk) return;
-  // the default slideshow is now the living gallery wall; it runs for a few
-  // minutes then returns here (?kiosk=1) to resume the sphere->wall cycle.
-  // (the single-photo "memories" walk stays available via its button.)
-  location.href = "/wall?kiosk=1";
+  const next = localStorage.getItem("kioskNext") || "slideshow";
+  if (next === "wall") {
+    localStorage.setItem("kioskNext", "slideshow");     // after the wall: slideshow
+    location.href = "/wall?kiosk=1" + (LITE ? "&lite=1" : "");  // wall 5m -> /
+    return;
+  }
+  localStorage.setItem("kioskNext", "wall");            // after slideshow: wall
+  startMemories();                                       // slideshow for 5 min...
+  kioskTimer = setTimeout(kioskNet, 5 * 60 * 1000);     // ...then back to the sphere
 }
 function cancelKiosk() {
   if (!kiosk) return;

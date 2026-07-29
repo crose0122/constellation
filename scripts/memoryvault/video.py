@@ -23,7 +23,8 @@ def probe(path: str) -> dict:
     """ffprobe → duration (s), width, height, taken_at (ISO), gps lat/lon.
     Everything is best-effort; missing fields come back None."""
     out = {"duration": None, "width": None, "height": None,
-           "taken_at": None, "gps_lat": None, "gps_lon": None}
+           "taken_at": None, "gps_lat": None, "gps_lon": None,
+           "live_photo": False}
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "quiet", "-print_format", "json",
@@ -38,6 +39,11 @@ def probe(path: str) -> dict:
     except (TypeError, ValueError):
         pass
     tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+    # iPhone Live Photos ship a ~3s .mov paired with the still — Apple tags the
+    # movie so we can tell it apart from a real video and not clutter the library
+    out["live_photo"] = any(
+        k.startswith("com.apple.quicktime.live-photo") or
+        k == "com.apple.quicktime.content.identifier" for k in tags)
     ct = tags.get("creation_time")
     if ct:
         # "2023-06-01T12:00:00.000000Z" → "2023-06-01T12:00:00"
@@ -85,6 +91,12 @@ def extract_frame(video: str, out_jpg: Path, at_seconds: float,
 def poster_path(sha256: str) -> Path:
     """The poster IS the display rendition — one image, reused everywhere."""
     return config.LIBRARY_ROOT / "display" / f"{sha256[:16]}.jpg"
+
+
+def is_live_photo(path: str) -> bool:
+    """True if this .mov is the motion half of an iPhone Live Photo (the still
+    is ingested separately, so we hide these rather than treat them as videos)."""
+    return bool(probe(str(path)).get("live_photo"))
 
 
 def make_poster(video: str, sha256: str, duration: float | None) -> Path | None:
