@@ -1,8 +1,8 @@
 """LUKS vault helpers (SPEC.md §6).
 
 The passphrase is never stored, logged, read from config, or passed as an
-argument — cryptsetup prompts for it interactively, and only Elliot and
-Casey know it. Nothing in this module (or anywhere else) writes any
+argument — cryptsetup prompts for it interactively, and only the
+household's owners know it. Nothing in this module (or anywhere else) writes any
 reference to a vaulted item outside the container.
 """
 
@@ -22,22 +22,11 @@ class VaultUnavailable(Exception):
 
 
 def is_mounted() -> bool:
-    if config.VAULT_MODE == "dir":
-        # a plain directory is the vault (Windows/container: no LUKS). Ensure
-        # it and its subfolders exist and are writable.
-        config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
-        for sub in ("", "review", "casey", "other"):
-            (config.VAULT_MOUNT / sub).mkdir(exist_ok=True)
-        return os.access(config.VAULT_MOUNT, os.W_OK)
     return os.path.ismount(config.VAULT_MOUNT)
 
 
 def open_vault():
-    """Interactive: cryptsetup prompts for the passphrase on the terminal.
-    In "dir" mode there's nothing to unlock — the folder is the vault."""
-    if config.VAULT_MODE == "dir":
-        is_mounted()  # just ensures the directory + subfolders exist
-        return
+    """Interactive: cryptsetup prompts for the passphrase on the terminal."""
     config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         ["sudo", "cryptsetup", "open", str(config.VAULT_IMG), MAPPER_NAME],

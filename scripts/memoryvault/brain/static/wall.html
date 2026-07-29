@@ -91,6 +91,12 @@
 <script>
 const qs = new URLSearchParams(location.search);
 const DIM = qs.get("dim"), VALUE = qs.get("value");
+// performance: budget devices choke on many decoding videos + high-DPR frames.
+// ?lite forces the lean path (no video playback, fewer frames); otherwise cap
+// concurrent playing videos so a normal wall stays smooth.
+const LITE = qs.has("lite");
+const MAX_VIDEOS = LITE ? 0 : 2;
+let playingVideos = 0;
 // item pool + a shuffled deck so the whole library shows before repeats
 let pool = [], deck = [], deckPos = 0;
 
@@ -123,8 +129,9 @@ function nextItem() {
 function gridPlan() {
   const w = document.documentElement.clientWidth;
   const h = document.documentElement.clientHeight;
-  const cols = Math.max(2, Math.min(5, Math.round(w / 460)));
-  const rows = Math.max(2, Math.min(4, Math.round(h / 460)));
+  const div = LITE ? 620 : 460;   // fewer, bigger frames on weak devices
+  const cols = Math.max(2, Math.min(LITE ? 3 : 5, Math.round(w / div)));
+  const rows = Math.max(2, Math.min(LITE ? 3 : 4, Math.round(h / div)));
   return { cols, rows };
 }
 
@@ -166,21 +173,27 @@ function fillSlot(slot, instant) {
   const item = nextItem();
   if (!item) return;
   slot.cur = item;
-  const isVideo = item.kind === "video" && item.video;
+  // decoding several videos at once melts a budget GPU — cap how many play,
+  // and in LITE play none (weak device / ?lite). Capped video items show their
+  // poster as a still image instead.
+  const wantVideo = item.kind === "video" && item.video;
+  const isVideo = wantVideo && playingVideos < MAX_VIDEOS;
   const el = document.createElement(isVideo ? "video" : "img");
   if (isVideo) {
     el.src = item.video; el.muted = true; el.loop = true;
     el.autoplay = true; el.playsInline = true; el.preload = "metadata";
     el.poster = item.display || item.thumb;
+    el._counted = true; playingVideos++;
     el.play().catch(() => {});
   } else {
-    el.src = item.display || item.thumb;
+    el.src = item.display || item.thumb;   // poster for a capped video
     el.loading = "eager";
   }
   const show = () => requestAnimationFrame(() => el.classList.add("on"));
   if (isVideo) show(); else el.onload = show;
   // crossfade: new element fades in over the old, then old is removed
   const old = slot.el;
+  if (old && old._counted) playingVideos = Math.max(0, playingVideos - 1);
   slot.frame.insertBefore(el, slot.cap);
   slot.el = el;
   if (old) setTimeout(() => old.remove(), 1700);
@@ -216,8 +229,9 @@ addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(start, 400)
 const KIOSK = qs.get("kiosk") === "1";
 const WALL_MS = 5 * 60 * 1000;
 if (KIOSK) {
-  setTimeout(() => { location.href = "/"; }, WALL_MS);
-  addEventListener("pointerdown", () => { location.href = "/"; }, { once: true });
+  const home = "/" + (LITE ? "?lite=1" : "");
+  setTimeout(() => { location.href = home; }, WALL_MS);
+  addEventListener("pointerdown", () => { location.href = home; }, { once: true });
 }
 
 (async function boot() {

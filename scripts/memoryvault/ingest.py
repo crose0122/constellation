@@ -169,6 +169,12 @@ def _ingest_video(conn, file_row, src: Path, sha: str) -> str:
 
     dest = library_dest(sha, src, None)  # refined below once we know taken_at
     meta = vid.probe(str(src))
+    if meta.get("live_photo"):
+        # the motion half of a Live Photo — the still is ingested on its own,
+        # so don't clutter the library with a ~3s "video"
+        conn.execute("UPDATE files SET disposition = 'live-photo' WHERE id = ?",
+                     (file_row["id"],))
+        return "live_photo"
     if meta["taken_at"]:
         dest = library_dest(sha, src, meta["taken_at"])
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +218,7 @@ def ingest(conn, limit: int | None = None, sample: bool = False) -> dict:
         sql += f" LIMIT {int(limit)}"
     rows = conn.execute(sql).fetchall()
 
-    stats = {"canonical": 0, "duplicate": 0, "vaulted": 0, "purged": 0,
+    stats = {"canonical": 0, "duplicate": 0, "live_photo": 0, "vaulted": 0, "purged": 0,
              "errors": 0}
     for i, row in enumerate(rows, 1):
         try:

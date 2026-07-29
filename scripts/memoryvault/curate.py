@@ -102,6 +102,38 @@ RESCUE_PROMPT = (
 )
 
 
+def live_photos(conn) -> dict:
+    """Hide the motion halves of iPhone Live Photos already ingested as videos.
+    The paired still is in the library, so these ~3s clips are redundant — mark
+    them curation 'Removed' (hidden everywhere, restorable in /curation) rather
+    than delete, in case you ever want the live motion."""
+    from . import video as vid
+
+    rows = conn.execute(
+        "SELECT id, library_path FROM photos WHERE media_kind = 'video' "
+        "AND (duration IS NULL OR duration <= 4) AND library_path IS NOT NULL "
+        "AND id NOT IN (SELECT photo_id FROM tags WHERE dimension = 'curation')"
+    ).fetchall()
+    hidden = 0
+    for i, r in enumerate(rows, 1):
+        if vid.is_live_photo(str(config.LIBRARY_ROOT / r["library_path"])):
+            conn.execute(
+                "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                "confidence, model_version) VALUES "
+                "(?, 'curation', 'Removed', 1.0, 'live-photo-1.0')", (r["id"],))
+            conn.execute(
+                "INSERT OR IGNORE INTO tags (photo_id, dimension, value, "
+                "confidence, model_version) VALUES "
+                "(?, 'curation_reason', 'live-photo', 1.0, 'live-photo-1.0')",
+                (r["id"],))
+            hidden += 1
+        if i % 200 == 0:
+            conn.commit()
+            print(f"  {i}/{len(rows)} checked, {hidden} hidden", flush=True)
+    conn.commit()
+    return {"hidden": hidden, "examined": len(rows)}
+
+
 def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
     """GPU second-opinion over the Trash bin: the heuristics never look at
     pixels, so real photos with stripped EXIF (messenger apps) or small
