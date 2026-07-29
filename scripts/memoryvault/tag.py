@@ -67,6 +67,13 @@ def model_image_b64(path: str, max_px: int = 1024) -> str:
     from PIL import Image, ImageOps
 
     with Image.open(path) as im:
+        # Decode at reduced scale where the format allows it. Without this the
+        # 108MP phone shots in this library are fully decoded — about 324MB of
+        # RGB — purely to be thrown away by the thumbnail on the next line. On
+        # a box running two shards that is enough to push it into swap, and a
+        # stage swapping on a huge decode looks exactly like a hang: no CPU, no
+        # progress, no error. draft() is a no-op for formats that cannot do it.
+        im.draft("RGB", (max_px, max_px))
         im = ImageOps.exif_transpose(im).convert("RGB")
         im.thumbnail((max_px, max_px))
         buf = io.BytesIO()

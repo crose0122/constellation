@@ -112,7 +112,8 @@ def cmd_faces(args):
 
 
 def cmd_curate(args):
-    from .curate import curate, live_photos, rescue, screenshots, vision_docs
+    from .curate import (curate, exclude_path, live_photos, rescue,
+                         screenshots, vision_docs)
 
     with _conn() as conn:
         if getattr(args, "vision_docs", False):
@@ -123,6 +124,8 @@ def cmd_curate(args):
             print(rescue(conn, shard=args.shard, limit=args.limit))
         elif getattr(args, "live_photos", False):
             print(live_photos(conn))
+        elif getattr(args, "exclude_path", None):
+            print(exclude_path(conn, args.exclude_path))
         else:
             print(curate(conn))
 
@@ -298,6 +301,9 @@ def main(argv=None):
                          "photos to Kept")
     cu.add_argument("--live-photos", action="store_true", dest="live_photos",
                     help="hide iPhone Live Photo motion clips (kept, restorable)")
+    cu.add_argument("--exclude-path", dest="exclude_path", metavar="TEXT",
+                    help="hide everything whose source path contains TEXT "
+                         "(work material, meetings — restorable)")
     cu.add_argument("--shard")
     cu.add_argument("--limit", type=int)
     fa = sub.add_parser("faces", help="face detection + clustering (InsightFace)")
