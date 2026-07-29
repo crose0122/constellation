@@ -812,11 +812,17 @@ function drawFamilyCore(n, isFocus) {
 
   // name in serif — this one isn't a category, it's us
   ctx.globalAlpha = 0.92;
-  ctx.fillStyle = "#fff3d8";
-  ctx.font = `600 ${Math.max(13, r * 0.55)}px Georgia, serif`;
-  ctx.textAlign = "center";
-  ctx.fillText("Our Family", n.x, n.y + r * 2.3 + 16);
   ctx.restore();
+  // queued like the others so nothing gets drawn across it; highest priority
+  // after the focused neuron, and it keeps its serif, box-less treatment
+  queueLabel({
+    x: n.x, y: n.y + r * 2.3 + 16,
+    text: "Our Family",
+    font: `600 ${Math.max(13, r * 0.55)}px Georgia, serif`,
+    alpha: 1, bg: null, fg: "#fff3d8",
+    pri: Number.MAX_SAFE_INTEGER - 1,
+    avoid: { x: n.x, y: n.y, r },
+  });
 }
 
 /* ---------- filament web (baked) + flow particles ----------
@@ -1098,22 +1104,76 @@ function drawCategoryNode(n) {
     ctx.globalAlpha = 1;
   }
 
-  // Blindsight-style HUD tag: leader line + boxed monospace label
+  // Blindsight-style HUD tag: leader line + boxed monospace label. Queued
+  // rather than drawn — see drawQueuedLabels for why.
   const isF = n.id === focusId;
   if ((n.depth || 0) > 0.45 && !isF) return;   // back hemisphere: no label
   const litL = !focusNbr || focusNbr.has(n.id);
   const psl = n.pscale || 1;
-  const ly = n.y + n.r * psl + (isF ? 24 : 20);
-  ctx.font = `${isF ? 15 : 13}px ui-monospace, Menlo, monospace`;
-  const text = `${n.label.toUpperCase()}  ${n.count}`;
-  const labelW = ctx.measureText(text).width;
-  ctx.globalAlpha = isF ? 1 : litL ? 0.85 : 0.15;
-  ctx.fillStyle = isF ? "#103652cc" : "#0a1f32aa";
-  ctx.fillRect(n.x - labelW / 2 - 6, ly - 14, labelW + 12, 19);
-  ctx.fillStyle = isF ? "#eaffff" : "#cfe8fa";
+  queueLabel({
+    x: n.x,
+    y: n.y + n.r * psl + (isF ? 24 : 20),
+    text: `${n.label.toUpperCase()}  ${n.count}`,
+    font: `${isF ? 15 : 13}px ui-monospace, Menlo, monospace`,
+    alpha: isF ? 1 : litL ? 0.85 : 0.15,
+    bg: isF ? "#103652cc" : "#0a1f32aa",
+    fg: isF ? "#eaffff" : "#cfe8fa",
+    // focused neuron always wins, then the biggest categories
+    pri: isF ? Number.MAX_SAFE_INTEGER : (n.count || 0),
+    // a label is worth less than the photo it would cover
+    avoid: { x: n.x, y: n.y, r: n.r * psl },
+  });
+}
+
+/* Label placement.
+
+   Labels used to be drawn wherever their neuron happened to sit, so on a TV
+   they piled into unreadable runs ("2021 2024 1399 2201") and sat on top of
+   the photos. They are now queued during the node pass and placed afterwards
+   in priority order — focused neuron first, then the biggest categories. A
+   label that would collide with one already placed, or land on another
+   neuron's photo, is simply dropped: fewer, readable labels beat a complete
+   set no one can read. Placement is per-frame, so labels reappear as the
+   sphere turns and space opens up. */
+const labelQueue = [];
+const labelAvoid = [];
+function queueLabel(l) {
+  labelQueue.push(l);
+  if (l.avoid) labelAvoid.push(l.avoid);
+}
+function drawQueuedLabels() {
+  labelQueue.sort((a, b) => (b.pri || 0) - (a.pri || 0));
+  const placed = [];
   ctx.textAlign = "center";
-  ctx.fillText(text, n.x, ly);
+  for (const l of labelQueue) {
+    ctx.font = l.font;
+    const w = ctx.measureText(l.text).width;
+    const box = { x1: l.x - w / 2 - 6, y1: l.y - 14, x2: l.x + w / 2 + 6, y2: l.y + 5 };
+    const hits = placed.some((p) =>
+      !(box.x2 < p.x1 || box.x1 > p.x2 || box.y2 < p.y1 || box.y1 > p.y2));
+    if (hits) continue;
+    // don't lay a label across a neuron's face
+    const cx = l.x, cy = (box.y1 + box.y2) / 2;
+    const onFace = labelAvoid.some((a) => {
+      if (a.r < 12) return false;
+      const nx = Math.max(box.x1, Math.min(a.x, box.x2));
+      const ny = Math.max(box.y1, Math.min(a.y, box.y2));
+      const dx = a.x - nx, dy = a.y - ny;
+      return dx * dx + dy * dy < a.r * a.r && !(Math.abs(a.x - cx) < 1 && a.y > cy);
+    });
+    if (onFace) continue;
+    placed.push(box);
+    ctx.globalAlpha = l.alpha;
+    if (l.bg) {
+      ctx.fillStyle = l.bg;
+      ctx.fillRect(box.x1, box.y1, box.x2 - box.x1, 19);
+    }
+    ctx.fillStyle = l.fg;
+    ctx.fillText(l.text, l.x, l.y);
+  }
   ctx.globalAlpha = 1;
+  labelQueue.length = 0;
+  labelAvoid.length = 0;
 }
 
 let haloSprite = null; // shared radial glow, tinted per draw via alpha
@@ -1294,6 +1354,7 @@ function draw() {
 
   if (view === "categories") {
     [...nodes.values()].sort((a, b) => b.depth - a.depth).forEach(drawCategoryNode);
+    drawQueuedLabels();   // labels go last, over every neuron, de-collided
   } else {
     for (const n of nodes.values()) drawPhotoNode(n);
   }

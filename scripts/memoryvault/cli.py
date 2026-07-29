@@ -112,11 +112,13 @@ def cmd_faces(args):
 
 
 def cmd_curate(args):
-    from .curate import curate, live_photos, rescue, vision_docs
+    from .curate import curate, live_photos, rescue, screenshots, vision_docs
 
     with _conn() as conn:
         if getattr(args, "vision_docs", False):
             print(vision_docs(conn, shard=args.shard, limit=args.limit))
+        elif getattr(args, "screenshots", False):
+            print(screenshots(conn, shard=args.shard, limit=args.limit))
         elif getattr(args, "rescue", False):
             print(rescue(conn, shard=args.shard, limit=args.limit))
         elif getattr(args, "live_photos", False):
@@ -265,6 +267,10 @@ def main(argv=None):
     cu = sub.add_parser("curate", help="heuristic Trash tagging (tiny/screenshot/cache)")
     cu.add_argument("--vision-docs", action="store_true", dest="vision_docs",
                     help="GPU pass: bin photographed paperwork/documents")
+    cu.add_argument("--screenshots", action="store_true",
+                    help="GPU pass: re-judge still-visible screenshots, bin "
+                         "the ones that are texts/receipts/documents and "
+                         "leave screenshots of real photos alone")
     cu.add_argument("--rescue", action="store_true",
                     help="GPU pass: model-review the Trash bin, flip real "
                          "photos to Kept")
