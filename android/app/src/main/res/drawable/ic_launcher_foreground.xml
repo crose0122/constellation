@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A small constellation: stars joined by faint lines. Drawn inside the 108dp
+     adaptive-icon canvas with the usual 18dp safe margin. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- connecting lines -->
+    <path
+        android:strokeColor="#4d8fd6"
+        android:strokeWidth="1.2"
+        android:strokeAlpha="0.7"
+        android:pathData="M38,42 L54,58 L72,40 L58,70 L38,42 Z" />
+
+    <!-- stars (filled dots, brightest at the vertices) -->
+    <path android:fillColor="#eaf3ff" android:pathData="M38,42 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
+    <path android:fillColor="#cfe4ff" android:pathData="M54,58 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <path android:fillColor="#ffffff" android:pathData="M72,40 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" />
+    <path android:fillColor="#cfe4ff" android:pathData="M58,70 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+    <path android:fillColor="#9ec6f2" android:pathData="M46,66 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+    <path android:fillColor="#9ec6f2" android:pathData="M66,56 m-2,0 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+</vector>
