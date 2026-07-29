@@ -75,22 +75,16 @@ def model_image_b64(path: str, max_px: int = 1024) -> str:
 
 
 def call_vision(path: str, prompt: str, fmt: dict | str = "json") -> dict:
-    import requests
+    from .vision_http import post_vision_text
 
     image_b64 = model_image_b64(path)
-    resp = requests.post(
-        config.OLLAMA_URL,
-        json={
-            "model": config.VISION_MODEL,
-            "prompt": prompt,
-            "images": [image_b64],
-            "stream": False,
-            "format": fmt,
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    text = resp.json().get("response", "")
+    text = post_vision_text({
+        "model": config.VISION_MODEL,
+        "prompt": prompt,
+        "images": [image_b64],
+        "stream": False,
+        "format": fmt,
+    }, timeout=120)
     if "```" in text:  # tolerate markdown fencing
         text = text.split("```json")[-1].split("```")[0] if "```json" in text else \
             text.split("```")[1]

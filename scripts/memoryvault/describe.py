@@ -70,12 +70,11 @@ def caption_video(frames) -> dict:
 
     from .tag import model_image_b64
     imgs = [model_image_b64(str(f)) for f in frames]
-    resp = requests.post(config.OLLAMA_URL, json={
+    from .vision_http import post_vision_text
+    text = post_vision_text({
         "model": config.VISION_MODEL, "prompt": VIDEO_PROMPT,
         "images": imgs, "stream": False, "format": VIDEO_FORMAT},
         timeout=180)
-    resp.raise_for_status()
-    text = resp.json().get("response", "")
     if "```" in text:
         text = (text.split("```json")[-1].split("```")[0]
                 if "```json" in text else text.split("```")[1])
