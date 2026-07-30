@@ -304,5 +304,50 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(list(config.VAULT_MOUNT.glob("*.jpg"))), 2)
 
 
+class TestPlacards(unittest.TestCase):
+    def test_render_forms_the_label(self):
+        from memoryvault.placards import render
+
+        self.assertEqual(render("Joy, Unsupervised", "the artist, backyard, 2019"),
+                         "«Joy, Unsupervised» — the artist, backyard, 2019")
+        # stray quotes and whitespace are stripped, empty title degrades cleanly
+        self.assertEqual(render('"Bath  Time"', " a small collaborator "),
+                         "«Bath Time» — a small collaborator")
+        self.assertEqual(render("", "just the line"), "just the line")
+
+    def test_build_prompt_carries_only_present_facts(self):
+        from memoryvault.placards import build_prompt
+
+        p = build_prompt({"people": ["Bailey"], "date": "2019-07-04",
+                          "scene": "a boy eating a popsicle"})
+        self.assertIn("people: Bailey", p)
+        self.assertIn("date: 2019-07-04", p)
+        self.assertIn("popsicle", p)
+        self.assertNotIn("occasion:", p)
+
+    def test_photo_facts_skips_filler_tags(self):
+        import sqlite3
+
+        from memoryvault.placards import photo_facts
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE photos (id INTEGER PRIMARY KEY, taken_at TEXT)")
+        conn.execute("CREATE TABLE tags (photo_id INTEGER, dimension TEXT, value TEXT)")
+        conn.execute("CREATE TABLE descriptions (photo_id INTEGER PRIMARY KEY, caption TEXT)")
+        conn.execute("INSERT INTO photos VALUES (1, '2019-07-04 12:00:00')")
+        conn.executemany("INSERT INTO tags VALUES (1, ?, ?)", [
+            ("people", "Bailey"), ("people", "Solo"), ("pets", "No Pets"),
+            ("occasion", "Birthday"), ("curation", "Kept")])
+        conn.execute("INSERT INTO descriptions VALUES (1, 'cake everywhere')")
+        f = photo_facts(conn, 1)
+        self.assertEqual(f["people"], ["Bailey"])       # filler 'Solo' dropped
+        self.assertNotIn("pets", f)                     # 'No Pets' dropped
+        self.assertEqual(f["occasion"], ["Birthday"])
+        self.assertNotIn("curation", f)                 # not a fact dimension
+        self.assertEqual(f["date"], "2019-07-04")
+        self.assertEqual(f["scene"], "cake everywhere")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
