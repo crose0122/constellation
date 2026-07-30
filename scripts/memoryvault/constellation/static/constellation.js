@@ -240,6 +240,9 @@ function roundSprite(im) {
 }
 
 function assignPhoto(n) {
+  // calm backdrop (the wall's sky) draws no photo faces — skip the fetch too,
+  // so a wall on the TV doesn't stream node photos it will never show
+  if (CALM) return;
   const url = n.core
     ? "/api/catphoto?family=1"
     : `/api/catphoto?dim=${encodeURIComponent(n.dim)}&value=${encodeURIComponent(n.value)}`;
@@ -1138,6 +1141,9 @@ function drawCategoryNode(n) {
 const labelQueue = [];
 const labelAvoid = [];
 function queueLabel(l) {
+  // calm backdrop: no HUD tags, no counts, no "Our Family" — behind the wall
+  // the sky is stars and pathways only, nothing that reads as a second UI
+  if (CALM) return;
   labelQueue.push(l);
   if (l.avoid) labelAvoid.push(l.avoid);
 }
@@ -1475,10 +1481,10 @@ document.getElementById("backBtn").addEventListener("click", exitPhotoView);
 /* ---------- ambient: the brain fires on its own ---------- */
 let ambientTimer = null;
 
-// calm: ambient chrome without the auto-firing walk. The wall embeds the
-// sphere as a backdrop (/ambient?calm=1) — a sky that re-zooms itself every
-// few seconds is distracting behind photographs, so calm keeps only the
-// base animation: twinkle, slow orbits, breathing glow.
+// calm: a true backdrop, not a second UI. The wall embeds the sphere as its
+// sky (/ambient?calm=1); calm drops the auto-firing walk, every label and
+// count (queueLabel), and the node photo faces (assignPhoto) — what remains
+// is stars, pathways, twinkle, slow orbits, breathing glow.
 const CALM = /(?:\?|&)calm\b/.test(location.search);
 
 function setAmbient(on) {

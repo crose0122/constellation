@@ -10,6 +10,8 @@ Invariants enforced here:
 import base64
 from pathlib import Path
 
+import sqlite3
+
 from . import config
 from .db import record_error, start_run, finish_run
 from . import vault
@@ -186,21 +188,49 @@ def screen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit) -> dict:
     rows = conn.execute("SELECT * FROM photos WHERE status = 'staged'").fetchall()
     stats = {SAFE: 0, VAULT: 0, REVIEW: 0, ERROR: 0}
 
+    # A write here used to be bare, while rescreen() next door already
+    # retried on a locked database. A concurrent stage held the lock, this
+    # raised, and the whole pass died after screening nothing — leaving 241
+    # unscreened items on display because the calling script logged the error
+    # and carried on. Screening is the one stage that must not fail quietly.
+    def _retry_locked(fn, attempts=8, wait=8):
+        import time as _t
+
+        for i in range(attempts):
+            try:
+                return fn()
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e).lower() or i == attempts - 1:
+                    raise
+                _t.sleep(wait)
+
     for row in rows:
-        verdict, score = verdict_for_row(row, score_fn, confirm_fn)
-        stats[verdict] += 1
-        if verdict == SAFE:
-            conn.execute(
-                "UPDATE photos SET status = 'screened', screen_score = ? WHERE id = ?",
-                (score, row["id"]),
-            )
-        elif verdict == VAULT:
-            vault.route_to_vault(conn, row["id"], review=False)
-        elif verdict == REVIEW:
-            vault.route_to_vault(conn, row["id"], review=True)
-        else:  # ERROR — fail safe: photo stays put, retried later
-            record_error(conn, "screen", "screening error (see logs)", photo_id=row["id"])
-        conn.commit()
+        try:
+            verdict, score = verdict_for_row(row, score_fn, confirm_fn)
+            stats[verdict] += 1
+            if verdict == SAFE:
+                _retry_locked(lambda: conn.execute(
+                    "UPDATE photos SET status = 'screened', screen_score = ? "
+                    "WHERE id = ?", (score, row["id"])))
+            elif verdict == VAULT:
+                _retry_locked(lambda: vault.route_to_vault(
+                    conn, row["id"], review=False))
+            elif verdict == REVIEW:
+                _retry_locked(lambda: vault.route_to_vault(
+                    conn, row["id"], review=True))
+            else:  # ERROR — fail safe: photo stays put, retried later
+                record_error(conn, "screen", "screening error (see logs)",
+                             photo_id=row["id"])
+            _retry_locked(conn.commit)
+        except Exception as e:
+            # One unscreenable photo must not strand the rest. It keeps
+            # status='staged', so the next run picks it up again.
+            stats[ERROR] += 1
+            try:
+                record_error(conn, "screen", repr(e), photo_id=row["id"])
+                conn.commit()
+            except Exception:
+                pass
 
     finish_run(conn, run, stats)
     return stats

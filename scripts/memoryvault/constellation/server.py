@@ -86,7 +86,7 @@ def _display_rendition(conn, sha16: str) -> Path | None:
     return out
 
 
-class BrainDB:
+class ConstellationDB:
     def __init__(self, db_path: Path):
         self.db_path = db_path
 
@@ -391,7 +391,7 @@ class BrainDB:
 
 
 class Handler(BaseHTTPRequestHandler):
-    braindb: BrainDB = None  # set by serve()
+    condb: ConstellationDB = None  # set by serve()
 
     def log_message(self, fmt, *args):
         pass
@@ -457,10 +457,10 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         q = parse_qs(url.query)
         try:
-            conn = self.braindb.conn()
+            conn = self.condb.conn()
         except sqlite3.OperationalError as e:
             # JSON so the frontend's res.ok/json() path degrades cleanly
-            print(f"[brain] 503 db unavailable: {e}", file=sys.stderr, flush=True)
+            print(f"[constellation] 503 db unavailable: {e}", file=sys.stderr, flush=True)
             self._send(503, b'{"error": "db unavailable"}', "application/json")
             return
         try:
@@ -468,8 +468,8 @@ class Handler(BaseHTTPRequestHandler):
                 page = (STATIC_DIR / "index.html").read_text()
                 # stamp asset URLs with their mtime: a reloaded page always
                 # references the current JS/CSS, defeating mobile Chrome's
-                # heuristic subresource cache (stale brain.js bit us twice)
-                for asset in ("brain.css", "brain.js"):
+                # heuristic subresource cache (stale constellation.js bit us twice)
+                for asset in ("constellation.css", "constellation.js"):
                     v = int((STATIC_DIR / asset).stat().st_mtime)
                     page = page.replace(f"/static/{asset}", f"/static/{asset}?v={v}")
                 self._send(200, page.encode(), "text/html")
@@ -491,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, b"not found", "text/plain")
             elif url.path == "/api/dbg":
                 ua = self.headers.get("User-Agent", "?")
-                with open("/tmp/brain-dbg.log", "a") as fh:
+                with open("/tmp/constellation-dbg.log", "a") as fh:
                     fh.write(f"{url.query} UA={ua}\n")
                 self._send(204, b"", "text/plain")
             elif url.path == "/people":
@@ -840,7 +840,7 @@ class Handler(BaseHTTPRequestHandler):
                         s.login(config.SMTP_USER, config.SMTP_PASS)
                         s.send_message(msg)
                 except Exception as e:
-                    print(f"[brain] share failed: {e!r}", file=sys.stderr,
+                    print(f"[constellation] share failed: {e!r}", file=sys.stderr,
                           flush=True)
                     self._send(502, json.dumps(
                         {"error": "send failed"}).encode(), "application/json")
@@ -984,15 +984,15 @@ class Handler(BaseHTTPRequestHandler):
                 page = (STATIC_DIR / "progress.html").read_bytes()
                 self._send(200, page, "text/html")
             elif url.path == "/api/progress":
-                self._json(self.braindb.progress(conn))
+                self._json(self.condb.progress(conn))
             elif url.path == "/api/categories":
                 top = max(6, min(80, int(q.get("top", [40])[0])))
-                self._json(self.braindb.categories(conn, top=top))
+                self._json(self.condb.categories(conn, top=top))
             elif url.path == "/api/index":
                 # the Index overlay: every category, no edge math
-                self._json(self.braindb.category_index(conn))
+                self._json(self.condb.category_index(conn))
             elif url.path == "/api/category":
-                self._json(self.braindb.category_photos(
+                self._json(self.condb.category_photos(
                     conn, q["dim"][0], q["value"][0],
                     limit=min(200, int(q.get("limit", [48])[0])),
                     offset=int(q.get("offset", [0])[0])))
@@ -1002,7 +1002,7 @@ class Handler(BaseHTTPRequestHandler):
                 if q.get("family"):
                     row = conn.execute(
                         "SELECT id, sha256 FROM photos WHERE status IN "
-                        "('screened','tagged','noted') " + self.braindb._NOT_TRASH +
+                        "('screened','tagged','noted') " + self.condb._NOT_TRASH +
                         "ORDER BY RANDOM() LIMIT 1").fetchone()
                 else:
                     row = conn.execute(
@@ -1063,13 +1063,13 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone()["c"]
                 self._json({"count": total, "photos": [_node(r) for r in rows]})
             elif url.path == "/api/start":
-                self._json({"id": self.braindb.start_node(conn)})
+                self._json({"id": self.condb.start_node(conn)})
             elif url.path == "/api/neighborhood":
                 pid = int(q["id"][0])
                 k = int(q.get("k", [DEFAULT_K])[0])
-                self._json(self.braindb.neighborhood(conn, pid, k))
+                self._json(self.condb.neighborhood(conn, pid, k))
             elif url.path == "/api/photo":
-                self._json(self.braindb.photo_detail(conn, int(q["id"][0])))
+                self._json(self.condb.photo_detail(conn, int(q["id"][0])))
             elif url.path.startswith("/thumb/"):
                 f = config.LIBRARY_ROOT / "thumbnails" / Path(url.path).name
                 if f.exists():
@@ -1125,8 +1125,19 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, b"not found", "text/plain")
             else:
                 self._send(404, b"not found", "text/plain")
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e) or "busy" in str(e):
+                # a background sweep held the library past busy_timeout — not
+                # a bug, so no traceback; a JSON 503 lets every frontend
+                # degrade the same way ("busy, try again"), never a raw 500
+                print(f"[constellation] 503 {url.path}: {e}", file=sys.stderr, flush=True)
+                self._send(503, b'{"error": "library busy"}', "application/json")
+            else:
+                print(f"[constellation] 500 {url.path}: {e}", file=sys.stderr, flush=True)
+                traceback.print_exc()
+                self._send(500, b'{"error": "internal"}', "application/json")
         except Exception as e:
-            print(f"[brain] 500 {url.path}: {e}", file=sys.stderr, flush=True)
+            print(f"[constellation] 500 {url.path}: {e}", file=sys.stderr, flush=True)
             traceback.print_exc()
             self._send(500, b'{"error": "internal"}', "application/json")
         finally:
@@ -1134,7 +1145,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "0.0.0.0", port: int = 8484, db_path: Path | None = None):
-    Handler.braindb = BrainDB(db_path or config.DB_PATH)
+    Handler.condb = ConstellationDB(db_path or config.DB_PATH)
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"The Brain: http://{host}:{port}/  (ambient mode: /ambient)")
     httpd.serve_forever()
