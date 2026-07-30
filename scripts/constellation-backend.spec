@@ -19,7 +19,16 @@ for pkg in ("insightface", "onnxruntime", "reverse_geocoder", "cv2",
 hiddenimports += collect_submodules("memoryvault")
 
 # the web UI's static assets + the tag schema
-datas += [("memoryvault/brain/static", "memoryvault/brain/static")]
+# The web UI's static assets. The package was renamed brain -> constellation,
+# and this path silently stopped matching: PyInstaller does not error on a
+# datas entry that resolves to nothing, so the bundle would have shipped with
+# no UI at all and only failed when someone opened it. Resolve it and assert.
+_static = os.path.join("memoryvault", "constellation", "static")
+if not os.path.isdir(_static):
+    raise SystemExit(
+        "constellation-backend.spec: %s not found — the web UI would ship "
+        "empty. Has the package been renamed again?" % _static)
+datas += [(_static, _static)]
 schema = os.path.join("..", "schema", "tag-schema.json")
 if os.path.exists(schema):
     datas += [(schema, "schema")]
