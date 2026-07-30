@@ -197,6 +197,12 @@ def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
         "WHERE t.dimension = 'curation' AND t.value = 'Trash' "
         "AND p.library_path IS NOT NULL AND p.id NOT IN "
         "(SELECT photo_id FROM tags WHERE dimension = 'curation_check') "
+        # Never resurrect something that is too small to be a memory. Asked
+        # about a 16x16 favicon upscaled to 640px, the model reasonably says
+        # "yes, that looks like a photo" — and 1,299 icons duly landed back on
+        # the wall as Kept. Size is not a judgement call, so it is not the
+        # model's to make.
+        f"AND MIN(p.width, p.height) >= {MIN_PX} "
     )
     if shard:
         i, m = (int(x) for x in shard.split("/"))
@@ -382,4 +388,111 @@ def screenshots(conn, shard: str | None = None, limit: int | None = None) -> dic
         if i % 100 == 0:
             print(f"  {i}/{len(rows)} checked, {stats['binned']} binned, "
                   f"{stats['kept']} real photos kept", flush=True)
+    return stats
+
+# What the earlier passes got wrong. The heuristic only flags "no camera EXIF
+# AND pixel-exact common screen dimensions", so anything resized, re-saved or
+# sent through a messaging app slips past. DOC_PROMPT then had an escape hatch —
+# "if any person, face, pet or family moment appears anywhere, answer no" — so a
+# screenshot of a text conversation containing a profile photo was answered no.
+# 78 hits in 10,671 photos is not a real detection rate.
+#
+# So: ask about the SCREEN, not the content. Interface chrome is objective and
+# present whether or not the screen happens to be showing someone's face.
+SCREEN_PROMPT = (
+    "Is this image a capture of a phone or computer screen, rather than a "
+    "photograph taken with a camera? "
+    "Judge by looking for interface elements, NOT by what the picture shows: a "
+    "status bar with a clock, battery or signal icons; a navigation, tab or app "
+    "bar; a browser address bar; an on-screen keyboard; chat or message "
+    "bubbles; buttons, menus, sliders or scrollbars; crisp anti-aliased "
+    "interface text; a solid flat-coloured header or footer strip. "
+    "Answer yes if such interface elements are present, EVEN IF the screen is "
+    "also showing a photograph of people. "
+    "Answer no for an ordinary camera photograph with no interface elements. "
+    "Answer with exactly one word: yes or no."
+)
+
+
+def screen_captures(conn, shard: str | None = None, limit: int | None = None,
+                    dry_run: bool = False) -> dict:
+    """Find screen captures among photos that are still on display.
+
+    Candidates are restricted to photos with no camera EXIF: a real photograph
+    almost always carries a camera tag, so this drops ~16,000 obvious photos
+    from the work without touching recall on screenshots, which never have one.
+
+    Binned as Trash with reason 'screen-capture' — reversible, and filterable
+    in /curation so a bad batch can be restored as a group.
+    """
+    from .tag import model_image_b64
+    from .vision_http import post_vision_text
+
+    sql = (
+        "SELECT p.id, p.library_path FROM photos p "
+        "WHERE p.media_kind = 'photo' AND p.camera IS NULL "
+        "  AND p.library_path IS NOT NULL "
+        f" AND MIN(p.width, p.height) >= {MIN_PX} "
+        "  AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.photo_id = p.id "
+        "      AND t.dimension = 'curation' "
+        "      AND t.value IN ('Trash','Removed','Delete')) "
+        "  AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.photo_id = p.id "
+        "      AND t.dimension = 'screen_check') "
+    )
+    if shard:
+        i, m = (int(x) for x in shard.split("/"))
+        sql += f"AND p.id % {m} = {i} "
+    sql += "ORDER BY p.id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql).fetchall()
+
+    stats = {"checked": 0, "screens": 0, "photos": 0, "errors": 0}
+    print(f"screen-capture scan: {len(rows)} candidate(s)"
+          + (" [DRY RUN]" if dry_run else ""), flush=True)
+    for i, row in enumerate(rows, 1):
+        try:
+            b64 = model_image_b64(
+                str(config.LIBRARY_ROOT / row["library_path"]), max_px=768)
+            ans = post_vision_text({
+                "model": config.VISION_MODEL, "prompt": SCREEN_PROMPT,
+                "images": [b64], "stream": False}, timeout=180).strip().lower()
+            is_screen = ans.startswith("yes")
+            if is_screen and not dry_run:
+                conn.execute(
+                    "DELETE FROM tags WHERE photo_id = ? AND dimension IN "
+                    "('curation','curation_reason')", (row["id"],))
+                for dim, val in (("curation", "Trash"),
+                                 ("curation_reason", "screen-capture")):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO tags (photo_id, dimension, value,"
+                        " confidence, model_version) VALUES (?,?,?,0.85,"
+                        "'screenscan-1.0')", (row["id"], dim, val))
+            if not dry_run:
+                # stamp it either way so a re-run does not re-pay for it
+                conn.execute(
+                    "INSERT OR IGNORE INTO tags (photo_id, dimension, value,"
+                    " confidence, model_version) VALUES (?,'screen_check',?,"
+                    "1.0,'screenscan-1.0')",
+                    (row["id"], "screen" if is_screen else "photo"))
+            stats["screens" if is_screen else "photos"] += 1
+            stats["checked"] += 1
+        except Exception as e:
+            stats["errors"] += 1
+            # Recording the error must never be what kills the pass. Another
+            # stage holding the write lock made record_error itself raise, and
+            # a whole scan died inside its own error handler.
+            try:
+                from .db import record_error
+                record_error(conn, "screenscan", repr(e), photo_id=row["id"])
+            except Exception:
+                pass
+        if not dry_run:
+            try:
+                conn.commit()
+            except Exception:
+                pass        # a locked commit retries on the next iteration
+        if i % 100 == 0:
+            print(f"  {i}/{len(rows)} checked, {stats['screens']} screens, "
+                  f"{stats['photos']} real photos", flush=True)
     return stats

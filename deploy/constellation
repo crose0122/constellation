@@ -79,13 +79,53 @@ sheet)
   [ "$n" -eq 0 ] && { echo "review queue is empty"; exit 0; }
   mkdir -p "$SHEETS"; rm -f "$SHEETS"/sheet-*.jpg
   $PY - "$INDEX" "$REVIEW" "$SHEETS" <<'PYEOF'
-import sys, pathlib
+import sys, pathlib, subprocess, tempfile, os
 from PIL import Image, ImageDraw
 index, review, out = (pathlib.Path(a) for a in sys.argv[1:4])
-names = index.read_text().split("\n")
-names = [n for n in names if n]
+names = [n for n in index.read_text().split("\n") if n]
 CELL, COLS, ROWS = 320, 5, 4        # 20 per sheet, numbered to match the list
 per = COLS * ROWS
+VIDEO = {".mov", ".mp4", ".m4v", ".avi", ".mkv", ".3gp", ".webm", ".mts"}
+
+def duration(path):
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "format=duration", "-of",
+                            "default=nw=1:nk=1", str(path)],
+                           capture_output=True, text=True, timeout=30)
+        return float(r.stdout.strip())
+    except Exception:
+        return None
+
+def video_strip(path, box):
+    """A filmstrip, not a poster frame. PIL cannot open .MOV at all, so these
+    used to render as the word "unreadable" — which is how 27 unscreened
+    videos once got waved through a review that could not see them. And one
+    frame is not enough: what you need to judge can be anywhere in the clip,
+    so sample across it."""
+    w, h = box
+    dur = duration(path) or 0
+    n = 4
+    marks = [max(0.1, dur * f) for f in (0.1, 0.35, 0.6, 0.85)] if dur > 1 else [0.0]
+    strip = Image.new("RGB", (w, h), "#000")
+    sub_h = h // len(marks)
+    with tempfile.TemporaryDirectory() as td:
+        for i, at in enumerate(marks):
+            f = os.path.join(td, "f%d.jpg" % i)
+            try:
+                subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.2f" % at,
+                                "-i", str(path), "-frames:v", "1",
+                                "-vf", "scale=%d:-1" % w, "-y", f],
+                               capture_output=True, timeout=60)
+                if os.path.exists(f) and os.path.getsize(f) > 0:
+                    with Image.open(f) as im:
+                        im = im.convert("RGB")
+                        im.thumbnail((w, sub_h))
+                        strip.paste(im, (0, i * sub_h))
+            except Exception:
+                pass
+    return strip, dur
+
 for s in range((len(names) + per - 1) // per):
     chunk = names[s*per:(s+1)*per]
     sheet = Image.new("RGB", (COLS*CELL, ROWS*CELL), "#111")
@@ -93,13 +133,25 @@ for s in range((len(names) + per - 1) // per):
     for i, nm in enumerate(chunk):
         num = s*per + i + 1
         x, y = (i % COLS)*CELL, (i // COLS)*CELL
+        src = review / nm
+        label = "%d  %s" % (num, nm[:34])
         try:
-            im = Image.open(review / nm); im.thumbnail((CELL-10, CELL-34))
-            sheet.paste(im.convert("RGB"), (x+5, y+28))
+            if src.suffix.lower() in VIDEO:
+                strip, dur = video_strip(src, (CELL-10, CELL-34))
+                sheet.paste(strip, (x+5, y+28))
+                label = "%d  VIDEO %.0fs  %s" % (num, dur, nm[:24])
+            else:
+                with Image.open(src) as im:
+                    im = im.convert("RGB"); im.thumbnail((CELL-10, CELL-34))
+                    sheet.paste(im, (x+5, y+28))
         except Exception as e:
-            d.text((x+8, y+40), "unreadable", fill="#f88")
-        d.rectangle([x+2, y+2, x+CELL-2, y+24], fill="#1d3550")
-        d.text((x+8, y+8), "%d  %s" % (num, nm[:34]), fill="#cfe8fa")
+            # never silently show nothing — say what failed, loudly
+            d.rectangle([x+5, y+28, x+CELL-5, y+CELL-6], fill="#3b0d0d")
+            d.text((x+10, y+60), "COULD NOT RENDER", fill="#fecaca")
+            d.text((x+10, y+76), type(e).__name__[:28], fill="#fecaca")
+        d.rectangle([x+2, y+2, x+CELL-2, y+24],
+                    fill="#4a1d1d" if src.suffix.lower() in VIDEO else "#1d3550")
+        d.text((x+8, y+8), label, fill="#cfe8fa")
     p = out / ("sheet-%02d.jpg" % (s+1))
     sheet.save(p, quality=80)
     print("  ", p)
