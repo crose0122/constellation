@@ -425,6 +425,10 @@ def screen_captures(conn, shard: str | None = None, limit: int | None = None,
     Binned as Trash with reason 'screen-capture' — reversible, and filterable
     in /curation so a bad batch can be restored as a group.
     """
+    # NB: the stamp dimension is 'screencap_check', NOT 'screen_check' —
+    # the NSFW screener already owns that name and stamps it on every safe
+    # photo, so a guard against it excluded 5,348 of 5,351 candidates and
+    # this pass silently did nothing on its first run.
     from .tag import model_image_b64
     from .vision_http import post_vision_text
 
@@ -437,7 +441,7 @@ def screen_captures(conn, shard: str | None = None, limit: int | None = None,
         "      AND t.dimension = 'curation' "
         "      AND t.value IN ('Trash','Removed','Delete')) "
         "  AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.photo_id = p.id "
-        "      AND t.dimension = 'screen_check') "
+        "      AND t.dimension = 'screencap_check') "
     )
     if shard:
         i, m = (int(x) for x in shard.split("/"))
@@ -472,7 +476,7 @@ def screen_captures(conn, shard: str | None = None, limit: int | None = None,
                 # stamp it either way so a re-run does not re-pay for it
                 conn.execute(
                     "INSERT OR IGNORE INTO tags (photo_id, dimension, value,"
-                    " confidence, model_version) VALUES (?,'screen_check',?,"
+                    " confidence, model_version) VALUES (?,'screencap_check',?,"
                     "1.0,'screenscan-1.0')",
                     (row["id"], "screen" if is_screen else "photo"))
             stats["screens" if is_screen else "photos"] += 1

@@ -72,6 +72,13 @@ def cmd_describe(args):
         print(describe(conn, shard=args.shard, limit=args.limit))
 
 
+def cmd_placards(args):
+    from .placards import placards
+
+    with _conn() as conn:
+        print(placards(conn, shard=args.shard, limit=args.limit))
+
+
 def cmd_notes(args):
     from .notes import generate
 
@@ -298,6 +305,12 @@ def main(argv=None):
     de.add_argument("--shard")
     de.add_argument("--limit", type=int)
 
+    pl = sub.add_parser("placards",
+                        help="witty gallery labels from tags + captions "
+                             "(text-only GPU pass)")
+    pl.add_argument("--shard")
+    pl.add_argument("--limit", type=int)
+
     sub.add_parser("notes", help="generate Obsidian notes from the db")
     sub.add_parser("geocode", help="GPS EXIF -> place tags (offline dataset)")
     sub.add_parser("edges", help="compute memory-graph edges")
@@ -372,7 +385,7 @@ def main(argv=None):
         "notes": cmd_notes, "edges": cmd_edges, "status": cmd_status,
         "retry": cmd_retry, "review": cmd_review, "vault": cmd_vault,
         "curate": cmd_curate, "faces": cmd_faces, "geocode": cmd_geocode,
-        "describe": cmd_describe,
+        "describe": cmd_describe, "placards": cmd_placards,
         "calibrate": cmd_calibrate, "migrate-quarantine": cmd_migrate_quarantine,
         "brain": cmd_brain, "demo": cmd_demo,
     }[args.cmd](args)

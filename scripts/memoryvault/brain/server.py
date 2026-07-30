@@ -41,6 +41,8 @@ def _node(row) -> dict:
         n["video"] = f"/video/{row['sha256'][:16]}"   # playable original
         if "duration" in keys and row["duration"]:
             n["duration"] = row["duration"]
+    if "placard" in keys and row["placard"]:
+        n["placard"] = row["placard"]
     return n
 
 
@@ -101,7 +103,8 @@ class BrainDB:
     # also the largest neurons on screen (rescreen-passed alone was 33k photos,
     # bigger than any real category) and, because they co-occur with nearly
     # everything, they generated most of the graph's edges.
-    _SKIP_DIMS = ("screen_check", "curation_check", "curation", "quality")
+    _SKIP_DIMS = ("screen_check", "screencap_check", "curation_check",
+                  "curation", "quality")
 
     # Individual values that are catch-alls or judgements rather than subjects.
     _SKIP_PAIRS = (("group_size", "no people"),
@@ -109,6 +112,38 @@ class BrainDB:
                    ("sentiment", "why do we still have this"))
 
     _cat_cache: dict = {}
+
+    _idx_cache: tuple | None = None
+
+    def category_index(self, conn) -> dict:
+        """Every category with its count — the Index overlay's data. No edge
+        math (that's what makes categories() expensive), same skip filters,
+        cached like the sphere's data."""
+        import time as _t
+
+        if self._idx_cache and _t.time() - self._idx_cache[0] < 600:
+            return self._idx_cache[1]
+        rows = conn.execute(
+            "SELECT dimension, value, COUNT(*) c FROM tags "
+            "WHERE dimension NOT IN ('curation', 'curation_reason') "
+            "GROUP BY dimension, value HAVING c >= 2 ORDER BY c DESC"
+        ).fetchall()
+        cats = []
+        for r in rows:
+            dim = r["dimension"].strip().lower()
+            val = r["value"].strip().lower()
+            if dim in self._SKIP_DIMS or val in self._SKIP_VALUES:
+                continue
+            if (dim, val) in self._SKIP_PAIRS:
+                continue
+            cats.append({"dim": r["dimension"], "value": r["value"],
+                         "count": r["c"]})
+        total = conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE status IN "
+            "('screened','tagged','noted')").fetchone()["c"]
+        result = {"categories": cats, "total": total}
+        self._idx_cache = (_t.time(), result)
+        return result
 
     def categories(self, conn, top: int = 40, min_count: int = 2, k: int = 6) -> dict:
         import time as _t
@@ -619,8 +654,17 @@ class Handler(BaseHTTPRequestHandler):
                              if q.get("order", [""])[0] == "random" else
                              "ORDER BY taken_at IS NULL, taken_at DESC, "
                              "id DESC ")
+                # gallery placard (the wall's label plates) when the sweep
+                # has written one — subselect so absence costs nothing
+                has_plc = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='placards'").fetchone()
+                plc_col = (", (SELECT placard FROM placards pl "
+                           "WHERE pl.photo_id = photos.id) placard "
+                           if has_plc else "")
                 rows = conn.execute(
-                    f"SELECT id, sha256, taken_at, media_kind, duration "
+                    f"SELECT id, sha256, taken_at, media_kind, duration"
+                    f"{plc_col} "
                     f"FROM photos {where} "
                     + order_sql
                     + "LIMIT ? OFFSET ?", (*params, lim, off)).fetchall()
@@ -944,6 +988,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/categories":
                 top = max(6, min(80, int(q.get("top", [40])[0])))
                 self._json(self.braindb.categories(conn, top=top))
+            elif url.path == "/api/index":
+                # the Index overlay: every category, no edge math
+                self._json(self.braindb.category_index(conn))
             elif url.path == "/api/category":
                 self._json(self.braindb.category_photos(
                     conn, q["dim"][0], q["value"][0],

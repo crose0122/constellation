@@ -1475,6 +1475,12 @@ document.getElementById("backBtn").addEventListener("click", exitPhotoView);
 /* ---------- ambient: the brain fires on its own ---------- */
 let ambientTimer = null;
 
+// calm: ambient chrome without the auto-firing walk. The wall embeds the
+// sphere as a backdrop (/ambient?calm=1) — a sky that re-zooms itself every
+// few seconds is distracting behind photographs, so calm keeps only the
+// base animation: twinkle, slow orbits, breathing glow.
+const CALM = /(?:\?|&)calm\b/.test(location.search);
+
 function setAmbient(on) {
   ambient = on;
   document.body.classList.toggle("ambient", on);
@@ -1485,6 +1491,7 @@ function setAmbient(on) {
   if (on) {
     document.getElementById("panel").classList.add("hidden");
     document.getElementById("catPanel").classList.add("hidden");
+    if (CALM) return;
     ambientTimer = setInterval(() => {
       const neighbors = edges
         .filter((e) => e.a === focusId || e.b === focusId)
@@ -1652,6 +1659,102 @@ document.getElementById("memRemove").addEventListener("click", async (e) => {
   memCurrent = null;                 // don't walk edges from a removed photo
   document.getElementById("memWhy").textContent = "— removed (restorable in curation) —";
   memNext();
+});
+
+/* ---------- the Index: every category in the sky, clickable ----------
+   A glass sheet listing all constellations grouped by dimension — the
+   sphere shows the top ~40, the Index shows everything. Click any entry
+   to fly straight into that category's galaxy (/node). */
+const IDX_DIMS = [
+  ["people", "👥", "People"], ["pets", "🐾", "Pets"],
+  ["occasion", "🎈", "Occasions"], ["milestone", "🏆", "Milestones"],
+  ["emotion", "🎭", "Emotions"], ["activity", "🏃", "Activities"],
+  ["location", "📍", "Locations"], ["place", "🗺️", "Places"],
+  ["season_holiday", "🍂", "Seasons & Holidays"],
+  ["time_of_day", "🌅", "Time of Day"], ["year", "📅", "Years"],
+];
+let idxLoaded = false;
+
+async function openIndex() {
+  cancelKiosk();                       // reading the Index is a real visit
+  document.getElementById("catIndex").classList.remove("hidden");
+  if (idxLoaded) return;
+  let d;
+  try {
+    d = await (await fetch("/api/index")).json();
+  } catch (e) {
+    document.getElementById("idxMeta").textContent =
+      "server busy — close and try again in a moment";
+    return;
+  }
+  const byDim = {};
+  for (const c of d.categories || []) (byDim[c.dim] ||= []).push(c);
+  const order = [...IDX_DIMS];
+  const known = new Set(IDX_DIMS.map((x) => x[0]));
+  for (const dim of Object.keys(byDim))
+    if (!known.has(dim)) order.push([dim, "✨", dim.replace(/_/g, " ")]);
+
+  const body = document.getElementById("idxBody");
+  body.textContent = "";
+  // Our Family leads: the whole sky in one tap
+  const fam = document.createElement("div");
+  fam.className = "idxRow family";
+  fam.innerHTML = `<span class="star" style="width:14px;height:14px;` +
+    `background:${FAMILY_GOLD};box-shadow:0 0 12px ${FAMILY_GOLD}"></span>` +
+    `<span class="v">🌞 Our Family — everything</span>` +
+    `<span class="n">${(d.total || 0).toLocaleString()}</span>`;
+  fam.addEventListener("click", () => { location.href = "/node?family=1"; });
+  body.appendChild(fam);
+
+  let shown = 0;
+  for (const [dim, emoji, label] of order) {
+    const cats = (byDim[dim] || []).sort((a, b) => b.count - a.count);
+    if (!cats.length) continue;
+    const color = dimColor(dim);
+    const sec = document.createElement("section");
+    sec.className = "idxDim";
+    const h = document.createElement("h3");
+    h.style.color = color;
+    h.innerHTML = `${emoji} ${label} <i style="background:${color}"></i>` +
+      `<span style="color:#5f7d95;letter-spacing:0;text-transform:none">` +
+      `${cats.length}</span>`;
+    sec.appendChild(h);
+    const max = cats[0].count;
+    for (const c of cats) {
+      // star size + glow carry the category's weight, like the sphere
+      const px = (6 + 8 * Math.sqrt(c.count / max)).toFixed(1);
+      const row = document.createElement("div");
+      row.className = "idxRow";
+      const star = document.createElement("span");
+      star.className = "star";
+      star.style.cssText = `width:${px}px;height:${px}px;background:${color};` +
+        `box-shadow:0 0 ${Math.round(px)}px ${color}aa`;
+      const v = document.createElement("span");
+      v.className = "v"; v.textContent = c.value;
+      const n = document.createElement("span");
+      n.className = "n"; n.textContent = c.count.toLocaleString();
+      row.append(star, v, n);
+      row.addEventListener("click", () => {
+        location.href = `/node?dim=${encodeURIComponent(c.dim)}` +
+          `&value=${encodeURIComponent(c.value)}`;
+      });
+      sec.appendChild(row);
+      shown++;
+    }
+    body.appendChild(sec);
+  }
+  document.getElementById("idxMeta").textContent =
+    `${shown.toLocaleString()} constellations · ` +
+    `${(d.total || 0).toLocaleString()} memories`;
+  idxLoaded = true;
+}
+
+document.getElementById("idxBtn").addEventListener("click", openIndex);
+document.getElementById("idxClose").addEventListener("click", () =>
+  document.getElementById("catIndex").classList.add("hidden"));
+addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape")
+    document.getElementById("catIndex").classList.add("hidden");
 });
 
 /* ---------- kiosk default: 1 min sphere, 5 min memories, forever;
