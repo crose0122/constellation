@@ -22,8 +22,18 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
   <a id="galleryLink" href="/gallery">gallery</a>
   <button id="memBtn">memories</button>
   <a id="wallLink" href="/wall">wall</a>
+  <button id="idxBtn">index</button>
   <button id="modeBtn">ambient</button>
 </header>
+
+<div id="catIndex" class="hidden">
+  <div id="idxHead">
+    <span id="idxTitle">🗂️ the Index — every constellation in the sky</span>
+    <span id="idxMeta"></span>
+    <button id="idxClose">✕</button>
+  </div>
+  <div id="idxBody"></div>
+</div>
 
 <div id="memories" class="hidden">
   <img id="memA" alt="">
