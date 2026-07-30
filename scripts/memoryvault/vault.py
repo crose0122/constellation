@@ -113,6 +113,13 @@ def release_from_review(conn, filename: str) -> dict:
     if existing:
         src.unlink()
         return {"released": filename, "note": "already in library"}
+
+    # Screening flags videos too, so the review queue holds them — and PIL
+    # cannot open a .mov. Releasing one used to raise, and since a release is
+    # usually issued as a batch, one video would abort the rest of the batch.
+    if src.suffix.lower() in config.VIDEO_EXTENSIONS:
+        return _release_video(conn, src, sha, filename)
+
     with Image.open(src) as img:
         img = ImageOps.exif_transpose(img)
         exif = extract_exif(img)
@@ -132,6 +139,45 @@ def release_from_review(conn, filename: str) -> dict:
     )
     conn.commit()
     return {"released": filename, "sha256": sha[:16]}
+
+
+def _release_video(conn, src, sha: str, filename: str) -> dict:
+    """The video half of release_from_review: poster frame instead of a PIL
+    decode, media_kind='video', and the duration recorded — mirroring what
+    ingest does, so a released video behaves like any other in the library."""
+    from datetime import datetime
+
+    from PIL import Image
+
+    from .ingest import library_dest, make_thumbnail
+    from . import video as vid
+
+    meta = vid.probe(str(src))
+    dest = library_dest(sha, src, meta.get("taken_at"))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+
+    poster = vid.make_poster(str(dest), sha, meta.get("duration"))
+    if poster is None:
+        # leave it in the library but say so: re-running poster extraction is
+        # cheap, whereas moving it back into the vault is not
+        raise RuntimeError(f"poster extraction failed for {filename} (ffmpeg?)")
+    with Image.open(poster) as pim:
+        make_thumbnail(pim, sha)
+
+    conn.execute(
+        "INSERT INTO photos (sha256, phash, width, height, taken_at, camera, "
+        "gps_lat, gps_lon, media_kind, status, library_path, duration, "
+        "created_at) VALUES (?, NULL, ?, ?, ?, NULL, ?, ?, 'video', "
+        "'screened', ?, ?, ?)",
+        (sha, meta.get("width"), meta.get("height"), meta.get("taken_at"),
+         meta.get("gps_lat"), meta.get("gps_lon"),
+         str(dest.relative_to(config.LIBRARY_ROOT)), meta.get("duration"),
+         datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    return {"released": filename, "sha256": sha[:16], "kind": "video",
+            "duration": meta.get("duration")}
 
 
 def delete_from_review(filename: str) -> dict:

@@ -200,13 +200,24 @@ def cmd_vault(args):
         names = sorted(f.name for f in rdir.iterdir() if f.is_file()) \
             if rdir.is_dir() else []
         if args.release or args.keep or args.delete:
+            # Verdicts arrive as batches, so one bad file must not abandon the
+            # rest: report it and carry on, then summarise.
+            done, failed = 0, []
             with _conn() as conn:
-                for fn in (args.release or []):
-                    print(vault.release_from_review(conn, fn))
-                for fn in (args.keep or []):
-                    print(vault.keep_in_vault(fn))
-                for fn in (args.delete or []):
-                    print(vault.delete_from_review(fn))
+                for fn, act in ([(f, vault.release_from_review) for f in (args.release or [])]
+                                + [(f, vault.keep_in_vault) for f in (args.keep or [])]
+                                + [(f, vault.delete_from_review) for f in (args.delete or [])]):
+                    try:
+                        result = (act(conn, fn) if act is vault.release_from_review
+                                  else act(fn))
+                        print(result)
+                        done += 1
+                    except Exception as e:
+                        failed.append((fn, f"{type(e).__name__}: {e}"))
+                        print(f"  FAILED {fn}: {type(e).__name__}: {e}")
+            print({"done": done, "failed": len(failed)})
+            for fn, why in failed:
+                print(f"   still in review: {fn} ({why})")
             return
         print(f"{len(names)} photo(s) awaiting review in {rdir}")
         for n in names:
