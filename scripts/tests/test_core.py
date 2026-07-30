@@ -260,11 +260,11 @@ class PipelineTest(unittest.TestCase):
         note.write_text(
             content.replace(
                 "<!-- manual -->\n<!-- /manual -->",
-                "<!-- manual -->\nthe day we got Sam\n<!-- /manual -->",
+                "<!-- manual -->\nthe day we got the dog\n<!-- /manual -->",
             )
         )
         generate(self.conn)
-        self.assertIn("the day we got Sam", note.read_text())
+        self.assertIn("the day we got the dog", note.read_text())
         index = (config.MEMORYVAULT_ROOT / "People" / "Alex.md").read_text()
         self.assertIn("2021", index)
 

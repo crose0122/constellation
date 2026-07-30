@@ -43,7 +43,7 @@ from PIL import Image
 SIZE = 256
 BAND = 52
 OUT = (pathlib.Path(__file__).resolve().parent.parent
-       / "memoryvault" / "brain" / "static" / "frames.css")
+       / "memoryvault" / "constellation" / "static" / "frames.css")
 
 
 # ------------------------------------------------------------------- timber
