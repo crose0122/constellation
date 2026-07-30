@@ -113,7 +113,7 @@ def cmd_faces(args):
 
 def cmd_curate(args):
     from .curate import (curate, exclude_path, live_photos, rescue,
-                         screenshots, vision_docs)
+                         screen_captures, screenshots, vision_docs)
 
     with _conn() as conn:
         if getattr(args, "vision_docs", False):
@@ -126,6 +126,9 @@ def cmd_curate(args):
             print(live_photos(conn))
         elif getattr(args, "exclude_path", None):
             print(exclude_path(conn, args.exclude_path))
+        elif getattr(args, "screens", False):
+            print(screen_captures(conn, shard=args.shard, limit=args.limit,
+                                  dry_run=getattr(args, "dry_run", False)))
         else:
             print(curate(conn))
 
@@ -312,6 +315,12 @@ def main(argv=None):
                          "photos to Kept")
     cu.add_argument("--live-photos", action="store_true", dest="live_photos",
                     help="hide iPhone Live Photo motion clips (kept, restorable)")
+    cu.add_argument("--screens", action="store_true",
+                    help="GPU pass: find screen captures by their interface "
+                         "chrome, not their content (catches messaged and "
+                         "resized screenshots the heuristic misses)")
+    cu.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="with --screens: report only, change nothing")
     cu.add_argument("--exclude-path", dest="exclude_path", metavar="TEXT",
                     help="hide everything whose source path contains TEXT "
                          "(work material, meetings — restorable)")

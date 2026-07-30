@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Constellation — the wall</title>
-<link rel="stylesheet" href="/static/frames.css">
 <style>
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; overflow: hidden; }
@@ -20,58 +19,34 @@
     display: grid; gap: clamp(10px, 1.6vw, 30px);
     grid-auto-flow: dense;
   }
-  /* an ornate, old-timey framed picture: gilt molding -> black mat with a
-     gold fillet -> the picture. Modeled on classic gold baroque frames. */
-  .frame {
-    /* Real antique moldings are heavy — the reference frames carry as much
-       gilt as picture. Thin borders made the ornament unreadable across a
-       room, so the band is roughly twice what it was. */
-    --fw: clamp(20px, 3.0vw, 62px);    /* molding width */
-    --mat: clamp(8px, 1.2vw, 24px);    /* mat width */
-    position: relative; overflow: hidden; border-radius: 3px;
-    box-shadow: 0 22px 36px -10px #000d;  /* cast shadow on the wall */
-    border: var(--fw) solid transparent;
-    /* the molding itself (background + border-image) comes from the
-       f-* profile classes in frames.css */
+  /* Photographic antique frames: real frame art (frame-*.png) with the
+     picture window cut to transparency. The art is the whole frame — no
+     generated moulding, no CSS mat; each profile names its window as a % of
+     the art in FRAME_ART below. The f-* mouldings in frames.css still exist
+     but are no longer hung here. */
+  .aframe { position: relative; }
+  .aframe .art {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: fill; pointer-events: none; z-index: 2;
+    /* shadow on the static art layer (follows the silhouette) rather than
+       the container: a filter on an ancestor of a playing video re-runs
+       every video frame and melts a budget TV box */
+    filter: drop-shadow(0 18px 22px #000c);
   }
-  .frame::before {                      /* the mat + gold fillet line */
-    content: ""; position: absolute; inset: 0; z-index: 1;
-    background: #16120d;                 /* near-black rag mat */
-    box-shadow: inset 0 0 0 2px #8a6a3a, /* thin gilt fillet */
-                inset 0 0 0 4px #16120d,
-                inset 0 0 14px #000b;
+  .aframe .win {                        /* the picture window behind the art */
+    position: absolute; overflow: hidden; background: #0c0a08; z-index: 1;
   }
-  .frame.m-linen::before {          /* warm linen mat, gold fillet */
-    background: #d9cdb4;
-    box-shadow: inset 0 0 0 2px #b08d3f, inset 0 0 0 4px #d9cdb4,
-                inset 0 0 12px #0004;
+  .aframe .win img, .aframe .win video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; opacity: 0; transition: opacity 1.6s ease;
   }
-  .frame.m-cream::before {          /* pale rag mat, no fillet — quieter */
-    background: #efe7d6;
-    box-shadow: inset 0 0 0 3px #cbbfa5, inset 0 0 12px #0003;
-  }
-  .frame::after {                       /* glass sheen over the whole thing */
-    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
-    background: linear-gradient(115deg, #ffffff14 0%, transparent 30%);
-  }
-  .frame img, .frame video {
-    position: absolute; inset: var(--mat); z-index: 2;
-    width: calc(100% - 2*var(--mat));
-    height: calc(100% - 2*var(--mat));
-    object-fit: cover; background: #0c0a08;
-    opacity: 0; transition: opacity 1.6s ease;
-  }
-  .frame img.on, .frame video.on { opacity: 1; }
-  /* oval portrait mat — very old-timey */
-  .frame.f-oval::before { border-radius: 50%; }
-  .frame.f-oval img, .frame.f-oval video { border-radius: 50%; }
+  .aframe .win img.on, .aframe .win video.on { opacity: 1; }
   .cap {
-    position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+    position: absolute; z-index: 3; pointer-events: none;
     font-size: 0.62rem; color: #d9c9a8bb; text-align: center;
-    padding: 3px; background: linear-gradient(#0000, #0008);
-    opacity: 0; transition: opacity 0.6s;
+    padding: 3px; opacity: 0; transition: opacity 0.6s;
   }
-  .frame:hover .cap { opacity: 1; }
+  .aframe:hover .cap { opacity: 1; }
   #hint {
     position: fixed; bottom: 8px; right: 12px; z-index: 5;
     font-size: 0.7rem; color: #d9c9a855;
@@ -119,7 +94,15 @@ const DIM = qs.get("dim"), VALUE = qs.get("value");
 // ?lite forces the lean path (no video playback, fewer frames); otherwise cap
 // concurrent playing videos so a normal wall stays smooth.
 const LITE = qs.has("lite");
-const MAX_VIDEOS = LITE ? 0 : 2;
+// How many frames may be playing video at once. Lite mode used to be 0, which
+// meant a TV box — the main place this wall runs — never played a single video,
+// only posters. The Shield holds 38ms frames with headroom, so it can afford
+// some; ?videos=N overrides for a weaker box.
+const MAX_VIDEOS = (() => {
+  const q = qs.get("videos");
+  if (q !== null) return Math.max(0, parseInt(q, 10) || 0);
+  return LITE ? 2 : 3;
+})();
 let playingVideos = 0;
 // item pool + a shuffled deck so the whole library shows before repeats
 let pool = [], deck = [], deckPos = 0;
@@ -168,28 +151,45 @@ function buildWall() {
   wall.innerHTML = "";
   slots = [];
   const cells = cols * rows;
+  // the art stretches to its grid cell, so deal profiles by cell shape
+  const cellRatio = (wall.clientWidth / cols) / (wall.clientHeight / rows);
   // promote a couple of cells to 2x2 "feature" frames for visual rhythm
   const features = new Set();
   if (cols >= 3 && rows >= 2) {
     features.add(Math.floor(Math.random() * cells));
   }
   let placed = 0;
+  const dealt = [];
   for (let i = 0; placed < cells; i++) {
     const frame = document.createElement("div");
-    // A real salon wall is mostly gilt with a few outliers, and no two
-    // neighbours match. Weighted so baroque/gilt dominate, silver and
-    // ebonised punctuate, and rose is rare. Deterministic in i so the wall
-    // doesn't reshuffle its own styles on every repaint.
-    const cls = ["frame", FRAMES[(i * 5 + 2) % FRAMES.length],
-                 MATS[(i * 3 + 1) % MATS.length]].filter(Boolean).join(" ");
-    frame.className = cls + ((i * 7 + 3) % 6 === 0 ? " f-oval" : "");
+    frame.className = "aframe";
     const big = features.has(i) && (placed % cols < cols - 1);
+    // the feature frame leads with the rococo centrepiece when its shape allows
+    const profile = big && cellRatio <= 1.15 ? "a-rococo-gilt"
+                  : dealProfile(i, cellRatio,
+                      dealt.length % cols ? dealt[dealt.length - 1] : null,
+                      dealt[dealt.length - cols] || null);
+    dealt.push(profile);
+    const art = FRAME_ART[profile];
+    const [l, t, r, b] = art.opening;
+    const win = document.createElement("div");
+    win.className = "win";
+    win.style.left = l + "%"; win.style.top = t + "%";
+    win.style.right = (100 - r) + "%"; win.style.bottom = (100 - b) + "%";
+    if (art.round) win.style.borderRadius = "50%";
+    frame.appendChild(win);
+    const artImg = document.createElement("img");
+    artImg.className = "art"; artImg.src = art.src; artImg.alt = "";
+    frame.appendChild(artImg);
     if (big) { frame.style.gridColumn = "span 2"; frame.style.gridRow = "span 2"; placed += 2; }
     else placed += 1;
+    // caption hangs just above the window's bottom edge, inside the sight line
     const cap = document.createElement("div"); cap.className = "cap";
+    cap.style.left = l + "%"; cap.style.right = (100 - r) + "%";
+    cap.style.bottom = (100 - b + 1) + "%";
     frame.appendChild(cap);
     wall.appendChild(frame);
-    const slot = { frame, cap, cur: null, el: null };
+    const slot = { frame, win, cap, cur: null, el: null };
     slots.push(slot);
     fillSlot(slot, true);
   }
@@ -223,7 +223,7 @@ function fillSlot(slot, instant) {
   // crossfade: new element fades in over the old, then old is removed
   const old = slot.el;
   if (old && old._counted) playingVideos = Math.max(0, playingVideos - 1);
-  slot.frame.insertBefore(el, slot.cap);
+  slot.win.appendChild(el);
   slot.el = el;
   if (old) setTimeout(() => old.remove(), 1700);
   slot.cap.textContent =
@@ -231,18 +231,41 @@ function fillSlot(slot, instant) {
       { year: "numeric", month: "short" }) : "") + (isVideo ? "  ▶" : "");
 }
 
+// The photographic frame deck. opening = the picture window as % of the art
+// [left, top, right, bottom]; round windows get an elliptical clip so the
+// photo can't poke through openwork scrolls. Values come from the
+// Constellation design system (components/media/Frame.jsx) — keep in sync.
+const FRAME_ART = {
+  "a-baroque-dark": { src: "/static/frame-baroque-dark.png",       opening: [28.4, 21.4, 71.6, 77.6] },
+  "a-baroque-sage": { src: "/static/frame-baroque-sage.png",       opening: [26.2, 24.4, 72.0, 74.9] },
+  "a-round-gilt":   { src: "/static/frame-round-gilt.png",         opening: [16.3, 16.3, 83.9, 83.9], round: true },
+  "a-oval-ebony":   { src: "/static/frame-oval-ebony.png",         opening: [20.2, 24.0, 76.4, 83.8], round: true },
+  "a-quatrefoil":   { src: "/static/frame-quatrefoil-gilt.png",    opening: [25.0, 22.2, 75.0, 78.3] },
+  "a-rococo-gilt":  { src: "/static/frame-rococo-gilt.png",        opening: [23.4, 24.0, 76.1, 79.5] },
+  "a-baroque-gilt": { src: "/static/frame-baroque-gilt-small.png", opening: [26.7, 23.4, 73.3, 75.3] },
+};
+// A real salon wall is mostly gilt with a few outliers, and no two neighbours
+// match. One deck per cell shape: photographic ornament stretched much past
+// ~40% of its native aspect reads as melted plastic, so tall cells hang the
+// tall frames (rococo 0.69, small gilt 0.75, oval 0.76), near-square cells
+// the square-ish ones (sage 0.89, dark 0.88), and wide cells the true
+// squares (quatrefoil, round). Deterministic in i so the wall doesn't
+// reshuffle its own styles on every repaint.
+const DECK_TALL = ["a-rococo-gilt", "a-baroque-gilt", "a-rococo-gilt", "a-oval-ebony", "a-rococo-gilt", "a-baroque-gilt"];
+const DECK_MID  = ["a-baroque-sage", "a-baroque-dark", "a-rococo-gilt", "a-quatrefoil", "a-baroque-gilt", "a-baroque-dark"];
+const DECK_WIDE = ["a-quatrefoil", "a-round-gilt", "a-baroque-sage", "a-baroque-dark", "a-quatrefoil", "a-baroque-sage"];
+function dealProfile(i, cellRatio, left, up) {
+  const deck = cellRatio < 0.82 ? DECK_TALL : cellRatio <= 1.15 ? DECK_MID : DECK_WIDE;
+  let k = (i * 5 + 2) % deck.length;
+  // walk until the profile differs from both the left and the up neighbour —
+  // every deck holds >= 3 distinct profiles, so an escape always exists
+  for (let step = 0; step < deck.length && (deck[k] === left || deck[k] === up); step++)
+    k = (k + 1) % deck.length;
+  return deck[k];
+}
+
 // gently swap ONE random frame at a time so the wall is always alive but
 // never busy; videos are left to play a while before being cycled out.
-// The frame deck. Repetition is what makes a generated wall look generated,
-// so gilt profiles dominate but never sit next to their own twin, and the
-// quiet profiles (ebony, rose, plain) are deliberately scarce.
-const FRAMES = [
-  "f-walnut",   "f-oak",       "f-mahogany",  "f-giltwood",
-  "f-walnut",   "f-cherry",    "f-oak",       "f-ebonised",
-  "f-mahogany", "f-walnut",    "f-oak",       "f-driftwood",
-  "f-cherry",   "f-giltwood",  "f-walnut",    "f-silverleaf",
-];
-const MATS = ["", "", "m-linen", "", "m-cream", "", "m-linen", ""];
 
 const SWAP_MS = 6000;
 function tick() {
