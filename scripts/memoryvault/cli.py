@@ -76,7 +76,8 @@ def cmd_placards(args):
     from .placards import placards
 
     with _conn() as conn:
-        print(placards(conn, shard=args.shard, limit=args.limit))
+        print(placards(conn, shard=args.shard, limit=args.limit,
+                       force=args.force))
 
 
 def cmd_notes(args):
@@ -133,7 +134,7 @@ def cmd_curate(args):
             print(live_photos(conn))
         elif getattr(args, "exclude_path", None):
             print(exclude_path(conn, args.exclude_path))
-        elif getattr(args, "screens", False):
+        elif getattr(args, "screen_captures", False):
             print(screen_captures(conn, shard=args.shard, limit=args.limit,
                                   dry_run=getattr(args, "dry_run", False)))
         else:
@@ -247,15 +248,15 @@ def cmd_migrate_quarantine(args):
     migrate_quarantine(Path(args.quarantine_dir) if args.quarantine_dir else None)
 
 
-def cmd_brain(args):
-    from .brain.server import serve
+def cmd_constellation(args):
+    from .constellation.server import serve
 
     serve(host=args.host, port=args.port)
 
 
 def cmd_demo(args):
     from .demo import build_demo
-    from .brain.server import serve
+    from .constellation.server import serve
 
     target = Path(args.dir) if args.dir else config.LIBRARY_ROOT / "demo"
     build_demo(target, n=args.n)
@@ -310,6 +311,9 @@ def main(argv=None):
                              "(text-only GPU pass)")
     pl.add_argument("--shard")
     pl.add_argument("--limit", type=int)
+    pl.add_argument("--force", action="store_true",
+                    help="run even if another placards sweep is already "
+                         "running (deliberate sharded backfills)")
 
     sub.add_parser("notes", help="generate Obsidian notes from the db")
     sub.add_parser("geocode", help="GPS EXIF -> place tags (offline dataset)")
@@ -328,10 +332,14 @@ def main(argv=None):
                          "photos to Kept")
     cu.add_argument("--live-photos", action="store_true", dest="live_photos",
                     help="hide iPhone Live Photo motion clips (kept, restorable)")
-    cu.add_argument("--screens", action="store_true",
+    cu.add_argument("--screen-captures", action="store_true",
+                    dest="screen_captures",
                     help="GPU pass: find screen captures by their interface "
                          "chrome, not their content (catches messaged and "
-                         "resized screenshots the heuristic misses)")
+                         "resized screenshots the heuristic misses). Named so "
+                         "it is not a prefix of --screenshots: argparse would "
+                         "silently redirect to that older pass against a "
+                         "stale deploy rather than erroring.")
     cu.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="with --screens: report only, change nothing")
     cu.add_argument("--exclude-path", dest="exclude_path", metavar="TEXT",
@@ -366,7 +374,9 @@ def main(argv=None):
                         help="move legacy plaintext Quarantine/ into the vault and shred")
     mq.add_argument("--quarantine-dir")
 
-    b = sub.add_parser("brain", help="serve The Brain web UI")
+    b = sub.add_parser("constellation", aliases=["brain"],
+                   help="serve the Constellation web UI "
+                        "(brain = deprecated alias, kept for the live systemd unit)")
     b.add_argument("--host", default="0.0.0.0")
     b.add_argument("--port", type=int, default=8484)
 
@@ -387,7 +397,7 @@ def main(argv=None):
         "curate": cmd_curate, "faces": cmd_faces, "geocode": cmd_geocode,
         "describe": cmd_describe, "placards": cmd_placards,
         "calibrate": cmd_calibrate, "migrate-quarantine": cmd_migrate_quarantine,
-        "brain": cmd_brain, "demo": cmd_demo,
+        "constellation": cmd_constellation, "brain": cmd_constellation, "demo": cmd_demo,
     }[args.cmd](args)
 
 

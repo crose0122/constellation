@@ -198,7 +198,7 @@ class PipelineTest(unittest.TestCase):
     def test_edges_and_neighborhood(self):
         from memoryvault.tag import tag
         from memoryvault.edges import compute_edges
-        from memoryvault.brain.server import BrainDB
+        from memoryvault.constellation.server import ConstellationDB
 
         for i in range(4):
             make_photo(self.src / f"e{i}.jpg", seed=100 + i * 17)
@@ -229,7 +229,7 @@ class PipelineTest(unittest.TestCase):
         stats = compute_edges(self.conn)
         self.assertGreater(stats["edges"], 0)
 
-        bdb = BrainDB(config.DB_PATH)
+        bdb = ConstellationDB(config.DB_PATH)
         n = bdb.neighborhood(self.conn, rows[0]["id"], k=8)
         self.assertEqual(n["focus"], rows[0]["id"])
         self.assertGreaterEqual(len(n["nodes"]), 2)

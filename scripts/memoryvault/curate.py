@@ -456,8 +456,12 @@ def screen_captures(conn, shard: str | None = None, limit: int | None = None,
           + (" [DRY RUN]" if dry_run else ""), flush=True)
     for i, row in enumerate(rows, 1):
         try:
+            # 640 like every other pass. 768 was a needless outlier: the
+            # second GPU box has less VRAM, and every job the watchdog has had
+            # to kill — four now — was a shard pointed at it. Interface chrome
+            # is legible at 640, so the extra pixels bought nothing.
             b64 = model_image_b64(
-                str(config.LIBRARY_ROOT / row["library_path"]), max_px=768)
+                str(config.LIBRARY_ROOT / row["library_path"]), max_px=640)
             ans = post_vision_text({
                 "model": config.VISION_MODEL, "prompt": SCREEN_PROMPT,
                 "images": [b64], "stream": False}, timeout=180).strip().lower()

@@ -14,18 +14,21 @@
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
     color: #d9c9a8;
   }
-  /* warm veil: a faint plaster tint floating over the star field, so the
-     salon keeps its candlelit mood while the constellation glows through */
+  /* warm veil: a plaster tint floating over the star field, so the salon
+     keeps its candlelit mood while the constellation glows through. Opaque
+     enough that the sky reads as atmosphere, never as a page behind a page. */
   #wall {
-    background: radial-gradient(ellipse at 50% 35%, #19141066 0%, #0c0a0855 70%, #06050455 100%);
+    background: radial-gradient(ellipse at 50% 35%, #191410aa 0%, #0c0a0899 70%, #06050499 100%);
   }
   /* The living constellation shows through behind the frames: the chrome-less
-     self-firing sphere (/ambient — no kiosk autopilot, so it never navigates
-     itself anywhere). Negative z paints it under the wall; pointer-events off
-     keeps every tap on the frames. */
+     calm sphere (/ambient?calm=1 — no autopilot, no labels, no photo faces).
+     Negative z paints it under the wall; pointer-events off keeps every tap
+     on the frames; the brightness cut keeps the brightest star well below the
+     dimmest photograph, so the backdrop can never upstage the salon. */
   #sky {
     position: fixed; inset: 0; width: 100%; height: 100%;
     border: 0; z-index: -1; pointer-events: none;
+    filter: brightness(0.5) saturate(0.8);
   }
   #wall {
     height: 100%; width: 100%; padding: clamp(10px, 2vw, 34px);
@@ -108,8 +111,12 @@
   #hint {
     position: fixed; bottom: 8px; right: 12px; z-index: 5;
     font-size: 0.7rem; color: #d9c9a855;
+    /* visible long enough to find your way back, then the wall is just a
+       wall — no chrome on the family display */
+    animation: hintfade 1.5s ease 12s forwards;
   }
   #hint a { color: #d9c9a888; }
+  @keyframes hintfade { to { opacity: 0; visibility: hidden; } }
 
 /* Tap a picture on the wall to open it here: full-screen, with the same
    actions the gallery offers. The wall keeps breathing behind it, but the
