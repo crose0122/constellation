@@ -99,6 +99,8 @@ CREATE TABLE IF NOT EXISTS errors (
   last_attempt TEXT NOT NULL,
   resolved INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_errors_open
+  ON errors(stage, resolved, source_path, photo_id);
 
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
@@ -163,6 +165,7 @@ def init(db_path: Path) -> sqlite3.Connection:
             "INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', ?)",
             (SCHEMA_VERSION,),
         )
+        _collapse_error_history(conn)
         conn.commit()
 
     for a in range(12):
@@ -176,12 +179,62 @@ def init(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def record_error(conn, stage: str, error: str, source_path=None, photo_id=None):
+def _collapse_error_history(conn) -> None:
+    """One-time: fold a history of repeat failures into one row per target.
+
+    Rows written before record_error kept a retry_count are all attempt #1 as
+    far as the dead-letter rule can tell, so carry the row count forward as
+    the attempt count — otherwise a file that already failed 35 nights running
+    would get three more."""
+    if conn.execute(
+        "SELECT 1 FROM schema_meta WHERE key = 'errors_collapsed'"
+    ).fetchone():
+        return
+    newest = ("SELECT MAX(id) FROM errors "
+              "GROUP BY stage, resolved, source_path, photo_id")
     conn.execute(
-        "INSERT INTO errors(stage, source_path, photo_id, error, last_attempt) "
-        "VALUES (?,?,?,?,?)",
-        (stage, str(source_path) if source_path else None, photo_id, error, now()),
+        "UPDATE errors SET retry_count = MAX(retry_count, ("
+        "  SELECT COUNT(*) FROM errors peer WHERE peer.stage = errors.stage"
+        "   AND peer.resolved = errors.resolved"
+        "   AND peer.source_path IS errors.source_path"
+        "   AND peer.photo_id IS errors.photo_id))"
+        f" WHERE id IN ({newest})"
     )
+    conn.execute(f"DELETE FROM errors WHERE id NOT IN ({newest})")
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key, value) "
+        "VALUES ('errors_collapsed', ?)", (now(),)
+    )
+
+
+def record_error(conn, stage: str, error: str, source_path=None, photo_id=None) -> int:
+    """Record one failure; return how many times this target has now failed.
+
+    One open row per (stage, target): a file that can never be read gets
+    retried by every nightly run, and inserting a row per attempt turned that
+    into 14,970 rows by 2026-08-02 with no way to see it was 431 files over
+    and over. Callers use the returned count to stop retrying (see
+    ingest.MAX_ATTEMPTS); `mvault retry` clears the counts."""
+    sp = str(source_path) if source_path else None
+    open_row = conn.execute(
+        "SELECT id, retry_count FROM errors WHERE stage = ? AND resolved = 0 "
+        "AND source_path IS ? AND photo_id IS ?",
+        (stage, sp, photo_id),
+    ).fetchone()
+    if open_row:
+        attempts = open_row["retry_count"] + 1
+        conn.execute(
+            "UPDATE errors SET retry_count = ?, error = ?, last_attempt = ? "
+            "WHERE id = ?",
+            (attempts, error, now(), open_row["id"]),
+        )
+        return attempts
+    conn.execute(
+        "INSERT INTO errors(stage, source_path, photo_id, error, retry_count, "
+        "last_attempt) VALUES (?,?,?,?,1,?)",
+        (stage, sp, photo_id, error, now()),
+    )
+    return 1
 
 
 def bump_stat(conn, key: str, delta: int = 1):
@@ -226,4 +279,6 @@ def funnel(conn) -> dict:
         "noted": q("SELECT COUNT(*) FROM photos WHERE status='noted'"),
         "edges": q("SELECT COUNT(*) FROM photo_edges"),
         "errors_open": q("SELECT COUNT(*) FROM errors WHERE resolved=0"),
+        # dead-lettered, not lost: `mvault retry` puts these back in the queue
+        "files_failed": q("SELECT COUNT(*) FROM files WHERE disposition='failed'"),
     }
