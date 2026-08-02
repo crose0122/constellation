@@ -30,16 +30,41 @@ full-screen app (PWA) on tablets and phones.
 - **The Constellation** — a stdlib-only web server: constellation, gallery, people,
   memories slideshow, curation, live pipeline progress
 
-## Quick start (Docker — recommended)
+## Install it (the setup app — recommended)
+
+A desktop wizard that takes you from nothing to your photos on screen, with no
+terminal, no Python and no Docker. Download **Constellation Setup** for your
+platform and run it; it will:
+
+1. **Scan your hardware** — finds your graphics card and its VRAM, and picks
+   the vision model that will actually run well on it (you can override
+   GPU vs CPU).
+2. **Ask where your photos are** — pick any number of folders. They are only
+   ever *read*; originals are never moved or modified.
+3. **Install the AI** — fetches Ollama and pulls the vision model, with live
+   download progress. This is the one big download (~6 GB).
+4. **Add your photos** — reads and indexes them, so the app opens with your
+   library actually in it.
+5. **Hand you the app** — opens Constellation, and tells you the address to
+   type into a TV or tablet.
+
+Tagging, face recognition and place lookup keep running in the background
+after the wizard closes; the app's **Progress** page shows them filling in. On
+a CPU-only machine that's an overnight job for a large library — the app is
+usable the whole time.
+
+To build the setup app from source, see [`installer/README.md`](installer/README.md).
+
+## Quick start (Docker)
 
 The whole system in one command. You need [Docker](https://docs.docker.com/get-docker/)
 with Compose.
 
 ```bash
-git clone https://github.com/familyosdev-sys/memory-vault.git
-cd memory-vault
+git clone https://github.com/crose0122/constellation.git
+cd constellation
 cp .env.example .env                 # optional: edit paths/port
-docker compose up -d                 # starts Ollama + the Brain
+docker compose up -d                 # starts Ollama + Constellation
 docker compose exec ollama ollama pull qwen2.5vl:7b   # one-time model download (~6 GB)
 
 # point it at your photos (default: the ./photos folder) and run a pass:
@@ -67,16 +92,16 @@ encryption, run the vault as a LUKS container on the host instead
 
 ```bash
 cd scripts
-python3 -m venv venv && venv/bin/pip install pillow pillow-heif imagehash \
-    insightface onnxruntime opencv-python-headless reverse_geocoder requests
+python3 -m venv venv && venv/bin/pip install -r requirements-backend.txt
 venv/bin/python mvault init
 venv/bin/python mvault discover /path/to/your/photos
 venv/bin/python mvault ingest
+venv/bin/python mvault curate              # bin screenshots/junk (restorable)
 venv/bin/python mvault vault create        # encrypted vault (interactive)
 venv/bin/python mvault screen
 venv/bin/python mvault tag                 # needs Ollama + qwen2.5vl:7b
 venv/bin/python mvault faces scan && venv/bin/python mvault faces cluster
-venv/bin/python mvault brain               # http://localhost:8484
+venv/bin/python mvault constellation       # http://localhost:8484
 ```
 
 Configuration is entirely environment-driven — see `scripts/memoryvault/config.py`
@@ -87,6 +112,21 @@ you label clusters on the `/people` page.
 
 `deploy/nightly-pipeline.sh`, `deploy/systemd/`, and `deploy/vault-ceremony.sh` are working
 examples from a real deployment — adjust paths/hosts to your setup.
+
+## Put it on your TV
+
+Constellation is at its best as an always-on display. Any device on the same
+network can show it — there is nothing to sync and no account to sign in to.
+
+- **Any TV or tablet with a browser:** open `http://<your-computer>:8484/?lite=1`.
+  The `?lite=1` suffix uses a lighter render path for low-powered boxes.
+- **Android TV boxes (the ONN box, Chromecast with Google TV, Fire TV) and
+  Android tablets:** sideload the small native app in [`android/`](android/README.md).
+  It runs full-screen as a **kiosk** photo frame, and registers as a **system
+  screensaver** so the display comes up whenever the box goes idle. No paid
+  kiosk app needed.
+
+The setup wizard prints the exact address to type in on its final screen.
 
 ## Design principles
 

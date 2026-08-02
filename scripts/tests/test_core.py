@@ -349,5 +349,70 @@ class TestPlacards(unittest.TestCase):
         self.assertEqual(f["scene"], "cake everywhere")
 
 
+class FreshLibraryTest(unittest.TestCase):
+    """A library where `faces scan` has never run — i.e. every new install.
+
+    The face tables used to be created lazily by faces.ensure_schema(), but
+    curate.py, vault.py and the Constellation server all read them, so on a
+    brand-new library those readers died with "no such table: faces". The
+    setup wizard hit this on its very first curate pass.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-fresh-"))
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        self.conn = db.init(config.DB_PATH)
+
+    def _tables(self):
+        return {r["name"] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+    def test_face_tables_exist_before_any_face_scan(self):
+        for t in ("faces", "face_clusters", "face_bans"):
+            self.assertIn(t, self._tables(), f"{t} missing on a fresh library")
+
+    def test_photos_has_faces_scanned_column(self):
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(photos)")}
+        self.assertIn("faces_scanned", cols)
+
+    def test_curate_runs_on_a_library_with_no_faces(self):
+        from memoryvault.curate import curate
+
+        # A cameraless photo at screen dimensions is the one shape that makes
+        # curate consult the faces table ("is this a screenshot, or a photo of
+        # people?"). 800x600 is in _SCREEN_DIMS — and is what a phone export
+        # or a resized JPEG commonly looks like, so a fresh install hits it
+        # immediately.
+        self.conn.execute(
+            "INSERT INTO photos (id, sha256, library_path, width, height, "
+            "camera, status, created_at) VALUES (1, 'deadbeef', 'a.jpg', "
+            "800, 600, NULL, 'canonical', ?)", (db.now(),))
+        self.conn.commit()
+        curate(self.conn)          # used to raise sqlite3.OperationalError
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM tags WHERE photo_id = 1 AND dimension = 'curation'"
+        ).fetchone(), "curate reached the faces branch and tagged the photo")
+
+    def test_face_readers_query_cleanly(self):
+        # the shapes curate/vault/server use, against the empty tables
+        self.conn.execute(
+            "SELECT 1 FROM faces WHERE photo_id = ? LIMIT 1", (1,)).fetchone()
+        self.conn.execute(
+            "SELECT photo_id FROM faces GROUP BY photo_id").fetchall()
+        self.conn.execute(
+            "SELECT f.id FROM faces f JOIN face_clusters c "
+            "ON c.id = f.cluster_id").fetchall()
+
+    def test_faces_ensure_schema_is_still_idempotent(self):
+        # db.py now creates them; faces.py must not fight it
+        from memoryvault import faces
+
+        faces.ensure_schema(self.conn)
+        faces.ensure_schema(self.conn)
+        for t in ("faces", "face_clusters", "face_bans"):
+            self.assertIn(t, self._tables())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
