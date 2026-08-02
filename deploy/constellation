@@ -16,9 +16,9 @@
 #   constellation clean               run the document + screenshot cleanup now
 set -uo pipefail
 
-MV="/opt/memoryvault/venv/bin/python $HOME/constellation/MemoryVault/.scripts/mvault"
+MV="/opt/memoryvault/venv/bin/python $HOME/constellation/scripts/mvault"
 PY="/opt/memoryvault/venv/bin/python"
-DB="~/Constellation/library/photos.db"
+DB="${MEMORYVAULT_LIBRARY_ROOT:-$HOME/Constellation/library}/photos.db"
 REVIEW="/mnt/vault/review"
 # Contact sheets are made FROM vault content, so they live inside the vault —
 # writing them to $HOME would leave plaintext copies of screened-out material
@@ -45,9 +45,10 @@ status)
     | grep -v pgrep | sed 's|.*mvault|  mvault|; s|.*bash |  |' || echo "  (idle)"
   echo "── load ──"; uptime | sed 's/.*load/  load/'
   echo "── library ──"
-  $PY - <<'PYEOF'
+  MV_DB="$DB" $PY - <<'PYEOF'
+import os
 import sqlite3
-c = sqlite3.connect("file:~/Constellation/library/photos.db?mode=ro", uri=True)
+c = sqlite3.connect(f"file:{os.environ['MV_DB']}?mode=ro", uri=True)
 q = lambda s: c.execute(s).fetchone()[0]
 print("  photos      ", q("select count(*) from photos where media_kind='photo'"))
 print("  videos      ", q("select count(*) from photos where media_kind='video'"))
