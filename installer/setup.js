@@ -155,15 +155,22 @@ function writeConfig(dir, cfg) {
   return path.join(dir, ".env");
 }
 
+// Resolve the bundled backend executable, or null when this machine runs the
+// stack via Docker instead.
+function backendExe(backendDir) {
+  const exe = process.env.CONSTELLATION_BACKEND ||
+    path.join(backendDir, IS_WIN ? "memoryvault-brain.exe" : "memoryvault-brain");
+  return fs.existsSync(exe) ? exe : null;
+}
+
 // Launch the backend. Prefers a bundled backend executable shipped with the
 // app (set BACKEND_CMD at build time); falls back to Docker Compose if that's
 // how this machine runs it. Returns the child so the app can manage it.
 function launchStack(backendDir, appDir, cfg, onStatus) {
-  const exe = process.env.CONSTELLATION_BACKEND ||
-    path.join(backendDir, IS_WIN ? "memoryvault-brain.exe" : "memoryvault-brain");
-  if (fs.existsSync(exe)) {
+  const exe = backendExe(backendDir);
+  if (exe) {
     onStatus({ phase: "launch", msg: "Starting Constellation…" });
-    return spawn(exe, ["brain"], {
+    return spawn(exe, ["constellation"], {
       env: { ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) },
       stdio: "ignore", windowsHide: true, detached: true }).unref();
   }
@@ -181,4 +188,119 @@ function envFromCfg(cfg) {
   };
 }
 
-module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel, writeConfig, launchStack };
+// --- the first sweep -------------------------------------------------------
+// Installing the software is not the job; seeing your photos is. Until this
+// existed the wizard wrote a config, started the server and opened a star map
+// with nothing in it — the folders picked on the storage step were never read
+// by anything.
+//
+// The sweep is split in two because the stages have wildly different costs:
+//
+//   foreground  init -> discover -> ingest -> curate   (no model involved)
+//       Hashing and EXIF only. Minutes, not hours, and when it finishes the
+//       library genuinely has photos in it, so the app opens with content.
+//
+//   background  screen -> tag -> geocode -> describe -> faces -> edges
+//       Every model-bound stage. On a CPU-only box tagging a large library is
+//       an overnight job, so it must not hold the wizard hostage — it runs
+//       detached and the app's own /progress page reports it filling in.
+//
+// Stage order matches docker/entrypoint.sh, which is the canonical chain.
+const FOREGROUND_STAGES = [
+  { args: ["init"], label: "Preparing the library" },
+  // discover is expanded per source folder below
+  { args: ["ingest"], label: "Reading photos (hashing + EXIF)" },
+  { args: ["curate"], label: "Setting aside screenshots and junk" },
+];
+
+const BACKGROUND_STAGES = [
+  ["screen"], ["tag"], ["geocode"], ["describe"],
+  ["faces", "scan"], ["faces", "cluster"], ["edges"],
+];
+
+function runStage(exe, args, env, onLine) {
+  return new Promise((resolve) => {
+    const child = spawn(exe, args, { env, windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"] });
+    let tail = "";
+    const feed = (buf) => {
+      tail += buf;
+      let nl;
+      while ((nl = tail.indexOf("\n")) >= 0) {
+        const line = tail.slice(0, nl).trim();
+        tail = tail.slice(nl + 1);
+        if (line) onLine(line);
+      }
+    };
+    child.stdout.on("data", feed);
+    child.stderr.on("data", feed);
+    child.on("error", (e) => resolve({ ok: false, error: String(e.message || e) }));
+    child.on("close", (code) => resolve({ ok: code === 0, code }));
+  });
+}
+
+// Run the cheap stages to completion, reporting stage-level progress plus the
+// backend's own most recent output line.
+async function runFirstSweep(backendDir, cfg, onStatus) {
+  const exe = backendExe(backendDir);
+  if (!exe) {
+    // Docker path: the compose file already exposes an equivalent chain.
+    onStatus({ phase: "sweep", pct: 1,
+      msg: "Docker install — run `docker compose run --rm memoryvault pipeline`." });
+    return { ok: true, skipped: true };
+  }
+  const env = { ...process.env, ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
+  const sources = (cfg.sources || []).filter(Boolean);
+
+  const stages = [];
+  for (const s of FOREGROUND_STAGES) {
+    stages.push(s);
+    if (s.args[0] === "init") {
+      for (const src of sources) {
+        stages.push({ args: ["discover", src, "--kind", "local"],
+          label: `Finding photos in ${path.basename(src) || src}` });
+      }
+    }
+  }
+
+  for (let i = 0; i < stages.length; i++) {
+    const st = stages[i];
+    const base = i / stages.length;
+    onStatus({ phase: "sweep", pct: base, msg: st.label + "…" });
+    const r = await runStage(exe, st.args, env, (line) =>
+      onStatus({ phase: "sweep", pct: base, msg: `${st.label} — ${line.slice(0, 90)}` }));
+    // `init` must succeed — without a database nothing downstream can run.
+    // The rest are best-effort: a single unreadable folder is not a reason to
+    // strand someone at a setup wizard with no way forward.
+    if (!r.ok && st.args[0] === "init") {
+      return { ok: false, error: r.error || `\`init\` failed (exit ${r.code})` };
+    }
+    if (!r.ok) {
+      onStatus({ phase: "sweep", pct: base,
+        msg: `${st.label} — finished with warnings; continuing.` });
+    }
+  }
+  onStatus({ phase: "sweep", pct: 1, msg: "Your photos are in." });
+  return { ok: true, sources: sources.length };
+}
+
+// Kick off the model-bound stages detached, so they survive this window
+// closing. One shell holds the chain: each stage is allowed to fail without
+// killing the ones after it (`;`), matching entrypoint.sh's `|| true` spirit.
+function startBackgroundSweep(backendDir, cfg) {
+  const exe = backendExe(backendDir);
+  if (!exe) return { ok: false, skipped: true };
+  const env = { ...process.env, ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
+  const q = (s) => IS_WIN ? `"${s}"` : `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const chain = BACKGROUND_STAGES
+    .map((args) => [exe, ...args].map(q).join(" "))
+    .join(IS_WIN ? " & " : "; ");
+  const child = IS_WIN
+    ? spawn("cmd.exe", ["/c", chain], { env, detached: true, stdio: "ignore", windowsHide: true })
+    : spawn("/bin/sh", ["-c", chain], { env, detached: true, stdio: "ignore" });
+  child.unref();
+  return { ok: true };
+}
+
+module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
+  writeConfig, launchStack, runFirstSweep, startBackgroundSweep, backendExe };

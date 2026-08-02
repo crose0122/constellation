@@ -7,7 +7,7 @@ const backBtn = document.getElementById("back");
 const nextBtn = document.getElementById("next");
 
 const state = { scan: null, cfg: { model: "qwen2.5vl:7b", libraryRoot: "", sources: [], vaultMode: "dir" } };
-const STEPS = ["welcome", "scan", "storage", "download", "done"];
+const STEPS = ["welcome", "scan", "storage", "download", "sweep", "done"];
 let step = 0;
 
 function gb(n) { return (n == null) ? "?" : `${n} GB`; }
@@ -168,8 +168,59 @@ const VIEWS = {
       if (pr.phase === "error") document.getElementById("dErr").textContent = "⚠ " + pr.msg;
     });
     const r = await S.install(state.cfg);
-    if (r.ok) { nextBtn.disabled = false; nextBtn.textContent = "Finish →"; nextBtn.onclick = () => go(4); }
+    if (r.ok) { nextBtn.disabled = false; nextBtn.textContent = "Add my photos →"; nextBtn.onclick = () => go(4); }
     else { document.getElementById("dErr").textContent = "⚠ " + (r.error || "download failed"); nextBtn.textContent = "Retry"; nextBtn.disabled = false; nextBtn.onclick = () => go(3); }
+  },
+
+  // 5) First sweep -----------------------------------------------------------
+  // Read the chosen folders and actually populate the library. Everything here
+  // is hashing and EXIF — no model — so it finishes in minutes and the app
+  // opens with real photos in it. The model-bound stages start afterwards, in
+  // the background, and report themselves on the app's own progress page.
+  async sweep() {
+    const n = (state.cfg.sources || []).length;
+    main.innerHTML = `
+      <h2>Adding your photos</h2>
+      <p class="sub">Reading ${n === 1 ? "your folder" : `your ${n} folders`} and building the
+        library. Originals are only ever read, never moved or changed.</p>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between">
+          <span id="swLabel">Starting…</span></div>
+        <div class="track"><div class="fill" id="swFill"></div></div>
+        <p class="muted" id="swLine" style="margin:0.7rem 0 0;font-size:0.85rem"></p>
+      </div>
+      <p class="muted" id="swErr"></p>`;
+    backBtn.style.visibility = "hidden";
+    nextBtn.disabled = true;
+    nextBtn.textContent = "Working…";
+    // onProgress registers an ipcRenderer listener that outlives this view, so
+    // a retry leaves an older handler pointing at DOM that no longer exists.
+    // Every lookup is guarded rather than assumed.
+    S.onProgress((pr) => {
+      if (pr.phase !== "sweep") return;
+      const [label, detail] = String(pr.msg || "").split(" — ");
+      const lab = document.getElementById("swLabel");
+      const line = document.getElementById("swLine");
+      const f = document.getElementById("swFill");
+      if (!lab || !line || !f) return;      // this view is gone; nothing to draw
+      lab.textContent = label || "";
+      line.textContent = detail || "";
+      if (pr.pct != null) {
+        f.style.width = Math.round(pr.pct * 100) + "%";
+        if (pr.pct >= 1) f.classList.add("done");
+      }
+    });
+    const r = await S.sweep(state.cfg);
+    if (r.ok) {
+      nextBtn.disabled = false;
+      nextBtn.textContent = "Finish →";
+      nextBtn.onclick = () => go(5);
+    } else {
+      document.getElementById("swErr").textContent = "⚠ " + (r.error || "sweep failed");
+      nextBtn.textContent = "Retry";
+      nextBtn.disabled = false;
+      nextBtn.onclick = () => go(4);
+    }
   },
 
   // 5) Done ------------------------------------------------------------------
@@ -181,12 +232,32 @@ const VIEWS = {
     nextBtn.disabled = true; nextBtn.style.display = "none";
     const r = await S.finish(state.cfg);
     if (r.ok) {
+      const lan = await S.lanAddress();
+      const tvUrl = lan ? `http://${lan}:8484/?lite=1` : null;
       main.innerHTML = `<div class="big"><div class="icon">🌌</div>
         <h2 style="margin-top:0.6rem">You're all set!</h2>
-        <p class="sub" style="max-width:480px;margin:0.6rem auto 1.2rem">
-          Constellation is running. Add your first photos, and the AI will start
-          tagging them. It's at <code>${esc(r.url)}</code>.</p>
-        <button class="primary" id="openApp">Open Constellation</button></div>`;
+        <p class="sub" style="max-width:520px;margin:0.6rem auto 1rem">
+          Your photos are in and Constellation is running at
+          <code>${esc(r.url)}</code>.${r.background ? `
+          The AI is tagging them, recognising faces and finding places in the
+          background — the app's <b>Progress</b> page shows it filling in, and
+          it keeps going after you close this window.` : ""}</p>
+        <button class="primary" id="openApp">Open Constellation</button>
+        <div class="card" style="text-align:left;max-width:520px;margin:1.4rem auto 0">
+          <b>📺 Put it on your TV</b>
+          <p class="muted" style="margin:0.45rem 0 0;font-size:0.88rem">
+            ${tvUrl ? `On an Android TV box or tablet on this network, install the
+            Constellation app and enter <code>${esc(tvUrl)}</code> — or just open
+            that address in the TV's browser. It can run as an always-on photo
+            frame or as the system screensaver.`
+            : `Connect this computer to your network, then open Constellation's
+            address on the TV to use it as an always-on photo frame.`}
+          </p>
+        </div>
+        <p class="muted" style="margin-top:1.1rem;font-size:0.86rem">
+          Next: open <b>People</b> and name a face once — every photo of that
+          person becomes searchable.</p>
+        </div>`;
       document.getElementById("openApp").onclick = () => S.openUrl(r.url);
     } else {
       main.innerHTML = `<div class="big"><div class="icon">⚠</div>

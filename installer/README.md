@@ -11,7 +11,33 @@ zero to a running Constellation in a few clicks:
    videos from (read-only).
 4. **Download AI** — installs Ollama and pulls the vision model **onto the GPU**,
    with live progress.
-5. **Finish** — writes config, launches the stack, opens the app.
+5. **First sweep** — reads the chosen folders and builds the library, so the app
+   opens with photos in it (see below).
+6. **Finish** — launches the stack, starts the model-bound stages in the
+   background, opens the app, and gives you the LAN address for a TV or tablet.
+
+## The first sweep (why the wizard has to run the pipeline)
+
+Installing the software was never the job — *seeing your photos* is. The wizard
+used to write a config, start the server and open a star map with nothing in
+it; the folders picked on the storage step were written to the `.env` as
+`MEMORYVAULT_SOURCES` and then read by nothing at all.
+
+The sweep is split because the stages differ wildly in cost:
+
+| | stages | cost |
+|---|---|---|
+| **foreground** (step 5) | `init` → `discover` → `ingest` → `curate` | hashing and EXIF only — minutes |
+| **background** (after step 6) | `screen` → `tag` → `geocode` → `describe` → `faces` → `edges` | every model-bound stage — hours on CPU |
+
+The foreground set runs to completion with live progress, so the app genuinely
+has content when it opens. The background set is spawned **detached**, so it
+survives the wizard closing, and each stage is allowed to fail without killing
+the ones after it — no Ollama means no tags, but faces and the memory graph
+still get built. The app's own `/progress` page reports it filling in.
+
+Stage order matches `docker/entrypoint.sh`, which is the canonical chain. Only
+`init` is fatal if it fails: without a database nothing downstream can run.
 
 ## The model recommendation (why it never picks the 3B)
 
@@ -95,3 +121,8 @@ same as Ollama's.
 - **Test on real Windows hardware** — GPU detection is written against the
   documented Windows commands and validated on Linux's fallback paths; run the
   `.exe` on an actual Windows box with an NVIDIA/AMD card before shipping.
+  The sweep's Windows chain (`cmd /c "… & … & …"`) is likewise validated by
+  construction and on the POSIX path, not yet on Windows itself.
+- **Ship the Android APK** — the TV app currently has to be built from source
+  with a JDK and the Android SDK. A prebuilt, debug-signed `.apk` next to the
+  desktop installer would make the TV step as easy as the rest.
