@@ -13,6 +13,12 @@ import imagehash
 from . import config
 from .db import now, record_error, start_run, finish_run
 
+# attempts before a file is dead-lettered (disposition='failed') instead of
+# being re-read by every nightly run. Some sources hold bytes that will never
+# be an image — zero-length copies, truncated JPEGs, thumbnail caches — and
+# retrying them forever buries real errors. `mvault retry` releases them.
+MAX_ATTEMPTS = 3
+
 EXIF_IFD = 0x8769
 GPS_IFD = 0x8825
 TAG_DATETIME_ORIGINAL = 36867
@@ -205,9 +211,38 @@ def _ingest_video(conn, file_row, src: Path, sha: str) -> str:
     return "canonical"
 
 
+def _dead_letter(conn, file_id: int, source_path: str) -> None:
+    conn.execute(
+        "UPDATE files SET disposition = 'failed' WHERE id = ?", (file_id,)
+    )
+    print(f"  gave up after {MAX_ATTEMPTS} attempts: {source_path}")
+
+
+def release_dead_letters(conn) -> int:
+    """Put every dead-lettered file back in the ingest queue (see cmd_retry)."""
+    return conn.execute(
+        "UPDATE files SET disposition = 'discovered' WHERE disposition = 'failed'"
+    ).rowcount
+
+
+def _dead_letter_exhausted(conn) -> int:
+    """Retire files that already burned through their attempts in earlier runs
+    (their history predates the retry_count, or they failed before this run)."""
+    cur = conn.execute(
+        "UPDATE files SET disposition = 'failed' WHERE disposition = 'discovered' "
+        "AND source_path IN (SELECT source_path FROM errors WHERE stage = 'ingest' "
+        "AND resolved = 0 AND retry_count >= ?)",
+        (MAX_ATTEMPTS,),
+    )
+    return cur.rowcount
+
+
 def ingest(conn, limit: int | None = None, sample: bool = False) -> dict:
     """Ingest all (or a random sample of) discovered photo AND video files."""
     run = start_run(conn, "ingest")
+    retired = _dead_letter_exhausted(conn)
+    if retired:
+        print(f"  {retired} unreadable file(s) retired — `mvault retry` to release")
     order = "ORDER BY RANDOM()" if sample else "ORDER BY id"
     sql = (
         "SELECT * FROM files WHERE disposition='discovered' "
@@ -219,13 +254,17 @@ def ingest(conn, limit: int | None = None, sample: bool = False) -> dict:
     rows = conn.execute(sql).fetchall()
 
     stats = {"canonical": 0, "duplicate": 0, "live_photo": 0, "vaulted": 0, "purged": 0,
-             "errors": 0}
+             "errors": 0, "failed": retired}
     for i, row in enumerate(rows, 1):
         try:
             stats[ingest_one(conn, row)] += 1
         except Exception as e:
             stats["errors"] += 1
-            record_error(conn, "ingest", repr(e), source_path=row["source_path"])
+            attempts = record_error(
+                conn, "ingest", repr(e), source_path=row["source_path"])
+            if attempts >= MAX_ATTEMPTS:
+                _dead_letter(conn, row["id"], row["source_path"])
+                stats["failed"] += 1
         if i % 50 == 0:
             conn.commit()
             print(f"  ingested {i}/{len(rows)}")

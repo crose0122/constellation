@@ -144,13 +144,20 @@ def cmd_curate(args):
 def cmd_retry(args):
     """Errors are retried by re-running their stage: errored files stay
     'discovered', errored photos stay 'staged'/'screened', so the stages
-    naturally re-select them. Old error rows get marked resolved."""
-    from .ingest import ingest
+    naturally re-select them. Old error rows get marked resolved.
+
+    This is also the one way back for files ingest dead-lettered after
+    MAX_ATTEMPTS — asking for a retry means retry, so their disposition and
+    their attempt count both reset."""
+    from .ingest import ingest, release_dead_letters
     from .tag import tag
 
     with _conn() as conn:
+        released = release_dead_letters(conn)
         conn.execute("UPDATE errors SET resolved = 1 WHERE resolved = 0")
         conn.commit()
+        if released:
+            print(f"released {released} dead-lettered file(s)")
         print("ingest:", ingest(conn))
         try:
             from .screen import screen
