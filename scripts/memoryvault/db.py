@@ -124,6 +124,30 @@ CREATE TABLE IF NOT EXISTS descriptions (
   orientation TEXT, model_version TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+-- Face layer. faces.ensure_schema() owns these too and stays authoritative
+-- for the scan path, but they belong in the base schema because curate.py,
+-- vault.py and the Constellation server all read them — and on a library
+-- where `faces scan` has never run (i.e. every fresh install) those readers
+-- died with "no such table: faces". Creating them empty costs nothing.
+CREATE TABLE IF NOT EXISTS faces (
+  id INTEGER PRIMARY KEY,
+  photo_id INTEGER NOT NULL REFERENCES photos(id),
+  bbox TEXT NOT NULL,
+  quality REAL,
+  embedding BLOB NOT NULL,
+  cluster_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS face_clusters (
+  id INTEGER PRIMARY KEY, label TEXT, centroid BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_faces_photo ON faces(photo_id);
+CREATE INDEX IF NOT EXISTS idx_faces_cluster ON faces(cluster_id, quality DESC);
+-- human "not them" verdicts — survive reclustering forever
+CREATE TABLE IF NOT EXISTS face_bans (
+  face_id INTEGER NOT NULL, label TEXT NOT NULL,
+  PRIMARY KEY (face_id, label)
+);
 """
 
 
@@ -155,7 +179,7 @@ def init(db_path: Path) -> sqlite3.Connection:
     def _setup():
         conn.executescript(DDL)
         # additive migrations (CREATE TABLE won't add columns to old DBs)
-        for coldef in ("duration REAL",):
+        for coldef in ("duration REAL", "faces_scanned INTEGER NOT NULL DEFAULT 0"):
             try:
                 conn.execute(f"ALTER TABLE photos ADD COLUMN {coldef}")
             except sqlite3.OperationalError as e:
