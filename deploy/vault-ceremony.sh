@@ -43,7 +43,7 @@ if [[ "${1:-}" != "--remote" ]]; then
 fi
 
 # ---------- everything below runs ON the VM, interactively ----------
-export MEMORYVAULT_LIBRARY_ROOT="${MEMORYVAULT_LIBRARY_ROOT:-~/Constellation/library}"
+export MEMORYVAULT_LIBRARY_ROOT="${MEMORYVAULT_LIBRARY_ROOT:-$HOME/Constellation/library}"
 MV="/opt/memoryvault/venv/bin/python $HOME/constellation/scripts/mvault"
 IMG="$MEMORYVAULT_LIBRARY_ROOT/vault.img"
 

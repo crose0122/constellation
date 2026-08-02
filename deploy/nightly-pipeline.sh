@@ -5,7 +5,7 @@
 # new photos then wait as 'staged' until the next human vault-open; that
 # friction is the privacy design, not a bug.)
 set -uo pipefail
-export MEMORYVAULT_LIBRARY_ROOT=~/Constellation/library
+export MEMORYVAULT_LIBRARY_ROOT="${MEMORYVAULT_LIBRARY_ROOT:-$HOME/Constellation/library}"
 export MEMORYVAULT_NSFW_MODEL_PATH=/opt/memoryvault/nsfw-model
 export MEMORYVAULT_ROOT="$HOME/vault-view"
 MV="/opt/memoryvault/venv/bin/python $HOME/constellation/scripts/mvault"

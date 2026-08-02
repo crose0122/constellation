@@ -627,7 +627,7 @@ class Handler(BaseHTTPRequestHandler):
                 params: list = []
                 # every space-separated term must match a tag value, a
                 # dimension name, or the photo's date — AND semantics, so
-                # "ryan birthday 2019" narrows the way you'd expect
+                # "alex birthday 2019" narrows the way you'd expect
                 has_desc = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
                     "AND name='descriptions'").fetchone()
