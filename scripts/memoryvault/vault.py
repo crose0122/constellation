@@ -21,7 +21,34 @@ class VaultUnavailable(Exception):
     pass
 
 
+VAULT_SUBDIRS = ("", "review", "casey", "other")
+
+
 def is_mounted() -> bool:
+    """Is there somewhere safe for flagged content to go?
+
+    'luks' (the default, and what we run at home): only a genuinely mounted
+    LUKS volume counts. A bare directory must NOT pass — writing flagged
+    photos to an unmounted mountpoint would leave them in plaintext.
+
+    'dir': VAULT_MOUNT is a plain directory that is always available, for
+    containers and Windows where the host disk is already encrypted.
+
+    MEMORYVAULT_VAULT_MODE was documented in the README, shipped in
+    .env.example, baked into the Dockerfile and written by the setup wizard —
+    but nothing ever read it, so `os.path.ismount()` decided every case. A
+    plain directory is never a mountpoint, so dir mode always reported "vault
+    not mounted": `screen` aborted, no photo ever reached 'screened', and
+    since `tag` only takes screened photos, nothing was ever tagged. Every
+    Docker and native install produced a permanently empty star map.
+    """
+    if config.VAULT_MODE == "dir":
+        try:
+            for sub in VAULT_SUBDIRS:
+                (config.VAULT_MOUNT / sub).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return False
+        return config.VAULT_MOUNT.is_dir()
     return os.path.ismount(config.VAULT_MOUNT)
 
 
@@ -42,7 +69,7 @@ def open_vault():
         ["sudo", "chown", f"{os.getenv('USER', 'root')}:", str(config.VAULT_MOUNT)],
         check=True,
     )
-    for sub in ("", "review", "casey", "other"):
+    for sub in VAULT_SUBDIRS:
         (config.VAULT_MOUNT / sub).mkdir(exist_ok=True)
 
 
