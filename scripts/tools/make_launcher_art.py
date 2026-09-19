@@ -93,6 +93,7 @@ FIG_H = 0.835 - 0.120   # 0.715
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RES = os.path.join(REPO, "android", "app", "src", "main", "res")
 STATIC = os.path.join(REPO, "scripts", "memoryvault", "constellation", "static")
+INSTALLER = os.path.join(REPO, "installer")
 
 LATO = "/usr/share/fonts/truetype/lato/Lato-{}.ttf"
 
@@ -395,7 +396,10 @@ MIPMAPS = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 def write(path: str, data) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if isinstance(data, Image.Image):
-        data.save(path, "PNG", optimize=True)
+        if path.endswith(".icns"):
+            data.save(path, "ICNS")
+        else:
+            data.save(path, "PNG", optimize=True)
     else:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(data)
@@ -433,6 +437,25 @@ def main() -> None:
     # the middle 80%, so the figure stays well inside that.
     write(os.path.join(STATIC, "icon-192.png"), icon(192, safe=0.56).convert("RGB"))
     write(os.path.join(STATIC, "icon-512.png"), icon(512, safe=0.56).convert("RGB"))
+
+    print("desktop installer")
+    # electron-builder reads these out of buildResources (installer/assets):
+    # icon.png for Linux, icon.ico for Windows, icon.icns for macOS. They were
+    # named in installer/package.json but had never been drawn, so every
+    # installer build shipped the stock Electron atom.
+    master = icon(1024, safe=0.66).convert("RGB")
+    write(os.path.join(INSTALLER, "assets", "icon.png"),
+          icon(512, safe=0.66).convert("RGB"))
+    # Every .ico size is drawn at its own size rather than downsampled from the
+    # master: shrinking 1024px of sky to 16px turns the figure into mud.
+    ico_sizes = (16, 24, 32, 48, 64, 128, 256)
+    cuts = [icon(s, safe=0.66).convert("RGB") for s in ico_sizes]
+    ico = os.path.join(INSTALLER, "assets", "icon.ico")
+    os.makedirs(os.path.dirname(ico), exist_ok=True)
+    cuts[-1].save(ico, "ICO", sizes=[(s, s) for s in ico_sizes],
+                  append_images=cuts[:-1])
+    print(f"  {os.path.relpath(ico, REPO)}")
+    write(os.path.join(INSTALLER, "assets", "icon.icns"), master)
 
     if args.preview:
         print("previews")
