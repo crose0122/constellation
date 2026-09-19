@@ -15,8 +15,8 @@ android {
         applicationId = "com.constellation.kiosk"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
 
         // Bake in your server so the app needs no setup on first run:
         //   ./gradlew :app:assembleDebug -PconstellationUrl=http://10.0.0.5:8484/?lite=1

@@ -64,3 +64,19 @@ cd android
 | `KioskWebView.kt` | shared WebView setup (JS, autoplay, black bg) |
 | `SettingsActivity.kt` | edit the server URL |
 | `Prefs.kt` | stores the URL |
+| `res/drawable*`, `res/mipmap*` | launcher icon, adaptive icon, themed icon, TV banner |
+
+## Artwork
+
+None of the icons here are drawn by hand. The launcher icon, the adaptive icon, the
+Android 13 themed (monochrome) icon, the Android TV banner and the web app's own PWA
+icons are all framings of one star figure defined in
+`scripts/tools/make_launcher_art.py`, so no surface can drift away from the others:
+
+```bash
+python3 scripts/tools/make_launcher_art.py            # rewrite every asset
+python3 scripts/tools/make_launcher_art.py --preview  # + previews under build/
+```
+
+Output is deterministic — regenerating without changing the figure produces no diff.
+Needs Pillow, numpy, and `fonts-lato` for the banner's wordmark.
