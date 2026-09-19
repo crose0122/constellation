@@ -476,6 +476,12 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/manifest.json":
                 self._send(200, (STATIC_DIR / "manifest.json").read_bytes(),
                            "application/manifest+json")
+            elif url.path == "/favicon.ico":
+                # Chrome asks for this before it reads any <link rel="icon">,
+                # and a 404 here is what left the desktop app window wearing a
+                # generic globe. PNG bytes under an .ico name are fine.
+                self._send(200, (STATIC_DIR / "icon-192.png").read_bytes(),
+                           "image/png")
             elif url.path == "/sw.js":
                 # served from the root so the service worker scope covers "/"
                 self._send(200, (STATIC_DIR / "sw.js").read_bytes(),
