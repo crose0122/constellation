@@ -46,6 +46,8 @@ Needs Pillow, numpy, and the Lato family (fonts-lato) for the wordmark.
 from __future__ import annotations
 
 import argparse
+import functools
+import io
 import os
 import sys
 
@@ -392,14 +394,36 @@ ADAPTIVE = """<?xml version="1.0" encoding="utf-8"?>
 # ------------------------------------------------------------------ write ---
 MIPMAPS = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 
+# macOS icon members, each holding a PNG of that pixel size. ic11–ic14 are the
+# @2x variants of 16, 32, 128 and 256.
+ICNS_MEMBERS = (("ic07", 128), ("ic08", 256), ("ic09", 512), ("ic10", 1024),
+                ("ic11", 32), ("ic12", 64), ("ic13", 256), ("ic14", 512))
+
+
+def write_icns(path: str, member) -> None:
+    """Write a .icns by hand.
+
+    Pillow's own ICNS writer emits a `TOC ` member, which is legal and which
+    electron-builder's icon converter then tries to decode as an image — it
+    shells out to openjpeg, fails, and takes the whole installer build with it.
+    Nothing needs the table of contents, so this writes the image members only.
+    """
+    import struct
+    body = b""
+    for kind, px in ICNS_MEMBERS:
+        buf = io.BytesIO()
+        member(px).save(buf, "PNG", optimize=True)
+        png = buf.getvalue()
+        body += kind.encode("ascii") + struct.pack(">I", len(png) + 8) + png
+    with open(path, "wb") as fh:
+        fh.write(b"icns" + struct.pack(">I", len(body) + 8) + body)
+    print(f"  {os.path.relpath(path, REPO)}")
+
 
 def write(path: str, data) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if isinstance(data, Image.Image):
-        if path.endswith(".icns"):
-            data.save(path, "ICNS")
-        else:
-            data.save(path, "PNG", optimize=True)
+        data.save(path, "PNG", optimize=True)
     else:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(data)
@@ -443,19 +467,19 @@ def main() -> None:
     # icon.png for Linux, icon.ico for Windows, icon.icns for macOS. They were
     # named in installer/package.json but had never been drawn, so every
     # installer build shipped the stock Electron atom.
-    master = icon(1024, safe=0.66).convert("RGB")
-    write(os.path.join(INSTALLER, "assets", "icon.png"),
-          icon(512, safe=0.66).convert("RGB"))
-    # Every .ico size is drawn at its own size rather than downsampled from the
-    # master: shrinking 1024px of sky to 16px turns the figure into mud.
+    cut = functools.lru_cache(maxsize=None)(
+        lambda px: icon(px, safe=0.66).convert("RGB"))
+    write(os.path.join(INSTALLER, "assets", "icon.png"), cut(512))
+    # Every .ico and .icns member is drawn at its own size rather than
+    # downsampled from one master: shrinking 1024px of sky to 16px turns the
+    # figure into mud.
     ico_sizes = (16, 24, 32, 48, 64, 128, 256)
-    cuts = [icon(s, safe=0.66).convert("RGB") for s in ico_sizes]
     ico = os.path.join(INSTALLER, "assets", "icon.ico")
     os.makedirs(os.path.dirname(ico), exist_ok=True)
-    cuts[-1].save(ico, "ICO", sizes=[(s, s) for s in ico_sizes],
-                  append_images=cuts[:-1])
+    cut(ico_sizes[-1]).save(ico, "ICO", sizes=[(s, s) for s in ico_sizes],
+                            append_images=[cut(s) for s in ico_sizes[:-1]])
     print(f"  {os.path.relpath(ico, REPO)}")
-    write(os.path.join(INSTALLER, "assets", "icon.icns"), master)
+    write_icns(os.path.join(INSTALLER, "assets", "icon.icns"), cut)
 
     if args.preview:
         print("previews")
