@@ -9,6 +9,7 @@ Endpoints:
   GET /thumb/<sha16>.jpg         thumbnail
 """
 
+import hmac
 import json
 import random
 import sqlite3
@@ -21,6 +22,7 @@ from urllib.parse import urlparse, parse_qs
 
 from .. import config
 from ..db import connect
+from . import auth
 
 STATIC_DIR = Path(__file__).parent / "static"
 DEFAULT_K = 8
@@ -413,6 +415,122 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj):
         self._send(200, json.dumps(obj).encode(), "application/json")
 
+    # ── access control (V2 CP1) ─────────────────────────────────────────
+
+    def _client(self) -> str:
+        return self.client_address[0] if self.client_address else "?"
+
+    def _is_tls(self) -> bool:
+        return auth.request_is_tls(self._client(), self.headers)
+
+    def _cookies(self) -> dict:
+        return auth.parse_cookies(self.headers.get("Cookie"))
+
+    def _session(self):
+        return auth.SESSIONS.get(self._cookies().get(auth.SESSION_COOKIE))
+
+    def _deny(self, code: int, error: str, **extra):
+        body = json.dumps({"error": error, **extra}).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if "retry_after" in extra:
+            self.send_header("Retry-After", str(extra["retry_after"]))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _gate(self, path: str) -> bool:
+        """True = go ahead. Otherwise the response has been sent."""
+        cls = auth.classify(path)
+        if cls is None:
+            self._send(404, b"not found", "text/plain")
+            return False
+        if cls == auth.OPEN:
+            return True
+        if auth.require_tls() and not self._is_tls():
+            self._deny(403, "https required",
+                       hint="open the https:// address; the PIN never travels unencrypted")
+            return False
+        if not auth.pin_configured():
+            self._deny(503, "family PIN not set", hint="run: mvault pin set")
+            return False
+        sess = self._session()
+        if not sess:
+            if self.command == "GET" and not path.startswith("/api/") \
+                    and "text/html" in (self.headers.get("Accept") or ""):
+                self.send_response(303)
+                self.send_header("Location", f"/login?next={path}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+            self._deny(401, "family PIN required")
+            return False
+        if cls == auth.PIN_WRITE:
+            got = self.headers.get(auth.CSRF_HEADER, "")
+            if not got or not hmac.compare_digest(got, sess.csrf):
+                self._deny(403, "csrf check failed")
+                return False
+        return True
+
+    def _read_json_body(self, limit: int = 4096) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > limit:
+            return {}
+        try:
+            data = json.loads(self.rfile.read(n) or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _set_session_cookies(self, token: str, csrf: str):
+        secure = "; Secure" if self._is_tls() else ""
+        self.send_header("Set-Cookie", f"{auth.SESSION_COOKIE}={token}; Path=/; "
+                         f"HttpOnly; SameSite=Strict; Max-Age={auth.ABSOLUTE_S}{secure}")
+        # readable by the page's JS: it echoes this in the CSRF header
+        self.send_header("Set-Cookie", f"{auth.CSRF_COOKIE}={csrf}; Path=/; "
+                         f"SameSite=Strict; Max-Age={auth.ABSOLUTE_S}{secure}")
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/auth/login":
+            if auth.require_tls() and not self._is_tls():
+                self._deny(403, "https required")
+                return
+            if not auth.pin_configured():
+                self._deny(503, "family PIN not set", hint="run: mvault pin set")
+                return
+            client = self._client()
+            wait = auth.LOCKOUT.retry_after(client)
+            if wait:
+                self._deny(429, "too many tries", retry_after=wait)
+                return
+            pin = str(self._read_json_body().get("pin", ""))
+            if not auth.check_pin(pin):
+                auth.LOCKOUT.fail(client)
+                self._deny(401, "wrong PIN")
+                return
+            auth.LOCKOUT.success(client)
+            token, csrf = auth.SESSIONS.create()
+            body = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self._set_session_cookies(token, csrf)
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/api/auth/logout":
+            auth.SESSIONS.revoke(self._cookies().get(auth.SESSION_COOKIE))
+            self.send_response(204)
+            self.send_header("Set-Cookie", f"{auth.SESSION_COOKIE}=; Path=/; Max-Age=0")
+            self.send_header("Set-Cookie", f"{auth.CSRF_COOKIE}=; Path=/; Max-Age=0")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self._send(404 if auth.classify(path) is None else 405,
+                       b"not found", "text/plain")
+
     _VIDEO_CTYPE = {".mp4": "video/mp4", ".mov": "video/quicktime",
                     ".m4v": "video/x-m4v", ".webm": "video/webm",
                     ".3gp": "video/3gpp", ".avi": "video/x-msvideo"}
@@ -456,6 +574,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         q = parse_qs(url.query)
+        if not self._gate(url.path):
+            return
+        if url.path == "/login":
+            self._send(200, (STATIC_DIR / "login.html").read_bytes(), "text/html")
+            return
+        if url.path == "/api/auth/status":
+            self._json({"pin_set": auth.pin_configured(),
+                        "signed_in": self._session() is not None,
+                        "https": self._is_tls(),
+                        "https_required": auth.require_tls(),
+                        "share_enabled": auth.share_enabled()})
+            return
+        if url.path in ("/api/auth/login", "/api/auth/logout"):
+            self._send(405, b"use POST", "text/plain")
+            return
+        if url.path == "/api/photo/share" and not auth.share_enabled():
+            self._deny(404, "sharing is off", hint="an adult can enable it in settings")
+            return
         try:
             conn = self.condb.conn()
         except sqlite3.OperationalError as e:

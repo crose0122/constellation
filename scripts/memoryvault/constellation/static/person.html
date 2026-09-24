@@ -41,6 +41,7 @@ full photo. Tap <b>✕</b> on any face that is NOT this person — the photo los
 the tag and that face can never be matched to this name again.</p>
 <div class="grid" id="grid"></div>
 <div id="lb" class="hidden"><img id="lbImg" alt=""></div>
+<script src="/static/pin.js"></script>
 <script>
 const label = new URLSearchParams(location.search).get("label") || "";
 document.getElementById("title").textContent = `Faces tagged “${label}”`;

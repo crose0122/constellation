@@ -192,6 +192,26 @@ def cmd_review(args):
                   f"{r['keeper_photo_id']}, {r['pending']} pending")
 
 
+def cmd_pin(args):
+    """Set or check the family PIN (V2 CP1). Prompted, never an argument, so it
+    never lands in shell history or `ps`."""
+    import getpass
+
+    from .constellation import auth
+
+    if args.action == "status":
+        print("family PIN: " + ("set" if auth.pin_configured() else "NOT SET"))
+        return
+    first = getpass.getpass("New family PIN: ")
+    if getpass.getpass("Again: ") != first:
+        raise SystemExit("PINs didn't match; nothing changed")
+    try:
+        auth.set_pin(first)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print("family PIN set; everyone is signed out")
+
+
 def cmd_vault(args):
     from . import vault
 
@@ -372,6 +392,9 @@ def main(argv=None):
     v.add_argument("--delete", nargs="*", metavar="FILE",
                    help="review verdict: garbage — shred it (no undo)")
 
+    pn = sub.add_parser("pin", help="set or check the family PIN (private pages)")
+    pn.add_argument("action", choices=["set", "status"])
+
     c = sub.add_parser("calibrate", help="sweep screening thresholds on labeled samples")
     c.add_argument("--safe", required=True, help="folder of known-safe photos")
     c.add_argument("--flagged", required=True, help="folder of flagged-set photos")
@@ -400,7 +423,7 @@ def main(argv=None):
         "init": cmd_init, "discover": cmd_discover, "ingest": cmd_ingest,
         "dedup": cmd_dedup, "screen": cmd_screen, "tag": cmd_tag,
         "notes": cmd_notes, "edges": cmd_edges, "status": cmd_status,
-        "retry": cmd_retry, "review": cmd_review, "vault": cmd_vault,
+        "retry": cmd_retry, "review": cmd_review, "vault": cmd_vault, "pin": cmd_pin,
         "curate": cmd_curate, "faces": cmd_faces, "geocode": cmd_geocode,
         "describe": cmd_describe, "placards": cmd_placards,
         "calibrate": cmd_calibrate, "migrate-quarantine": cmd_migrate_quarantine,
