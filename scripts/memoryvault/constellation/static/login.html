@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Constellation — family PIN</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         background: radial-gradient(ellipse at top, #16213e, #05070f 70%);
+         font: 18px/1.4 system-ui, sans-serif; color: #e8ecf8; }
+  form { width: min(92vw, 340px); text-align: center; }
+  h1 { font-weight: 500; font-size: 1.4rem; margin: 0 0 .3rem; }
+  p { color: #9aa6c8; margin: 0 0 1.4rem; font-size: .95rem; }
+  input { width: 100%; box-sizing: border-box; font-size: 1.6rem; letter-spacing: .4em;
+          text-align: center; padding: .6rem; border-radius: 12px; border: 1px solid #334;
+          background: #0c1224; color: #fff; }
+  button { margin-top: 1rem; width: 100%; padding: .75rem; font-size: 1rem; border: 0;
+           border-radius: 12px; background: #f2c14e; color: #111; cursor: pointer; }
+  #msg { min-height: 1.4em; margin-top: 1rem; color: #ff9b8a; }
+  a { color: #9aa6c8; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="off">
+  <h1>Family PIN</h1>
+  <p>This part of Constellation is for grown-ups.</p>
+  <label for="pin" style="position:absolute;left:-9999px">PIN</label>
+  <input id="pin" type="password" inputmode="numeric" autocomplete="current-password"
+         minlength="4" maxlength="64" required autofocus>
+  <button type="submit">Open</button>
+  <div id="msg" role="status" aria-live="polite"></div>
+  <p style="margin-top:1.6rem"><a href="/">Back to the sky</a></p>
+</form>
+<script>
+(function () {
+  var f = document.getElementById("f"), pin = document.getElementById("pin"),
+      msg = document.getElementById("msg");
+  var next = new URLSearchParams(location.search).get("next") || "/curation";
+  if (!/^\/(?!\/)/.test(next)) next = "/curation";   // same-site paths only
+  fetch("/api/auth/status").then(function (r) { return r.json(); }).then(function (s) {
+    if (s.signed_in) location.replace(next);
+    else if (!s.pin_set) msg.textContent = "No family PIN yet. An adult sets it during setup.";
+    else if (s.https_required && !s.https)
+      msg.textContent = "Open the secure https:// address to use the PIN.";
+  });
+  f.addEventListener("submit", function (e) {
+    e.preventDefault();
+    msg.textContent = "";
+    fetch("/api/auth/login", {method: "POST", headers: {"Content-Type": "application/json"},
+                              body: JSON.stringify({pin: pin.value})})
+      .then(function (r) {
+        if (r.ok) { location.replace(next); return; }
+        pin.value = "";
+        if (r.status === 429) {
+          var s = r.headers.get("Retry-After") || "a little";
+          msg.textContent = "Too many tries. Wait " + s + " seconds.";
+        } else if (r.status === 403) {
+          msg.textContent = "Open the secure https:// address to use the PIN.";
+        } else {
+          msg.textContent = "That's not it. Try again.";
+        }
+      })
+      .catch(function () { msg.textContent = "Can't reach Constellation."; });
+  });
+})();
+</script>
+</body>
+</html>
