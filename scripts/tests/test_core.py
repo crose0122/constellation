@@ -9,6 +9,7 @@ neighborhood query.
 import sys
 import tempfile
 import unittest
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -347,6 +348,271 @@ class TestPlacards(unittest.TestCase):
         self.assertNotIn("curation", f)                 # not a fact dimension
         self.assertEqual(f["date"], "2019-07-04")
         self.assertEqual(f["scene"], "cake everywhere")
+
+
+class RetryLoopTest(unittest.TestCase):
+    """A file that can never be read must stop costing a run every night."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-retry-"))
+        self.src = self.tmp / "source"
+        self.src.mkdir()
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        self.conn = db.init(config.DB_PATH)
+
+    def _ingest(self):
+        from memoryvault.discover import discover
+        from memoryvault.ingest import ingest
+
+        discover(self.conn, self.src)
+        return ingest(self.conn)
+
+    def test_unreadable_file_is_dead_lettered_then_released(self):
+        from memoryvault.ingest import MAX_ATTEMPTS, release_dead_letters
+
+        # a real source file whose bytes are not an image — the shape of all
+        # 431 files the hub re-tried nightly (empty copies, truncated JPEGs)
+        (self.src / "broken.jpg").write_bytes(b"")
+        make_photo(self.src / "good.jpg", seed=7)
+
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            stats = self._ingest()
+            self.assertEqual(stats["errors"], 1, f"attempt {attempt}")
+            row = self.conn.execute(
+                "SELECT retry_count FROM errors WHERE resolved = 0"
+            ).fetchall()
+            self.assertEqual(len(row), 1, "one open row per broken file, not one per run")
+            self.assertEqual(row[0]["retry_count"], attempt)
+        self.assertEqual(stats["failed"], 1)
+
+        # the good photo landed, the broken one is out of the queue
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT disposition FROM files WHERE source_path LIKE '%broken%'"
+            ).fetchone()["disposition"], "failed")
+
+        # ...and the next run does no work at all on it
+        again = self._ingest()
+        self.assertEqual(again["errors"], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT retry_count FROM errors WHERE resolved = 0"
+            ).fetchone()["retry_count"], MAX_ATTEMPTS)
+
+        # retry is the way back: released, and it errors again rather than
+        # being silently skipped forever
+        self.assertEqual(release_dead_letters(self.conn), 1)
+        self.conn.execute("UPDATE errors SET resolved = 1 WHERE resolved = 0")
+        self.assertEqual(self._ingest()["errors"], 1)
+
+    def test_legacy_error_history_collapses_and_carries_the_count(self):
+        for _ in range(35):  # 35 nights of the same failure, pre-fix shape
+            self.conn.execute(
+                "INSERT INTO errors(stage, source_path, error, last_attempt) "
+                "VALUES ('ingest', '/src/x.jpg', 'boom', '2026-07-01T04:30:00')")
+        self.conn.execute(
+            "INSERT INTO errors(stage, photo_id, error, last_attempt) "
+            "VALUES ('tag', 12, 'other target', '2026-07-01T04:30:00')")
+        self.conn.execute("DELETE FROM schema_meta WHERE key = 'errors_collapsed'")
+        self.conn.commit()
+
+        db._collapse_error_history(self.conn)
+
+        rows = self.conn.execute(
+            "SELECT stage, retry_count FROM errors ORDER BY stage").fetchall()
+        self.assertEqual(len(rows), 2)  # one per target, not per attempt
+        self.assertEqual(rows[0]["stage"], "ingest")
+        self.assertEqual(rows[0]["retry_count"], 35)
+        self.assertEqual(rows[1]["retry_count"], 1)
+
+        # a target already past its budget is retired on the next ingest,
+        # without spending three more nights re-proving it
+        self.conn.execute(
+            "INSERT INTO sources(kind, root) VALUES ('dir', '/src')")
+        self.conn.execute(
+            "INSERT INTO files(source_id, source_path, media_kind, disposition, "
+            "discovered_at) VALUES (1, '/src/x.jpg', 'photo', 'discovered', 'x')")
+        self.conn.commit()
+        from memoryvault.ingest import ingest
+
+        self.assertEqual(ingest(self.conn)["failed"], 1)
+
+
+class EdgeBoundsTest(unittest.TestCase):
+    """compute_edges must stay linear in the library size — the all-pairs
+    version OOM-killed the 11GB VM on 2026-08-01 and 2026-08-02."""
+
+    N = 200  # 200 photos sharing one tag = 19,900 pairs the old way
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-edges-"))
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        self.conn = db.init(config.DB_PATH)
+        for i in range(self.N):
+            pid = self.conn.execute(
+                "INSERT INTO photos(sha256, taken_at, status, created_at) "
+                "VALUES (?,?, 'tagged', '2026-01-01')",
+                (f"{i:064x}", f"2020-05-{1 + i % 28:02d}T{i % 24:02d}:00:00"),
+            ).lastrowid
+            self.conn.execute(
+                "INSERT INTO tags(photo_id, dimension, value, model_version) "
+                "VALUES (?, 'people', 'Everyone', 'faces-1.0')", (pid,))
+        self.conn.commit()
+
+    def test_pairs_are_capped_per_photo_and_nobody_is_stranded(self):
+        from memoryvault.edges import GROUP_FANOUT, TOP_K, compute_edges
+
+        stats = compute_edges(self.conn)
+        all_pairs = self.N * (self.N - 1) // 2
+        self.assertLess(stats["raw_pairs"], all_pairs // 4,
+                        "raw pairs must not scale with n²")
+        self.assertLessEqual(stats["raw_pairs"], GROUP_FANOUT * self.N * len(
+            {"same-person", "same-event", "near-time"}))
+
+        # bounded, but every photo still has a way in and out
+        linked = self.conn.execute(
+            "SELECT COUNT(DISTINCT id) c FROM (SELECT photo_id_a AS id FROM "
+            "photo_edges UNION SELECT photo_id_b FROM photo_edges)"
+        ).fetchone()["c"]
+        self.assertEqual(linked, self.N)
+        # a node's degree can exceed TOP_K — the prune keeps the union of each
+        # node's own top-K, so a popular photo gets adopted by its neighbours.
+        # What must hold is the generation bound: fanout forward + fanout back.
+        widest = self.conn.execute(
+            "SELECT MAX(c) m FROM (SELECT COUNT(*) c FROM (SELECT photo_id_a AS id, "
+            "relation FROM photo_edges UNION ALL SELECT photo_id_b, relation "
+            "FROM photo_edges) GROUP BY id, relation)").fetchone()["m"]
+        self.assertLessEqual(widest, 2 * GROUP_FANOUT)
+        self.assertGreaterEqual(widest, TOP_K)  # not a starved graph either
+
+    def test_neighbours_are_the_ones_next_in_time(self):
+        from memoryvault.edges import compute_edges
+
+        compute_edges(self.conn)
+        # photos were dated by i % 28 — the same-day cluster is what a photo
+        # should be tied to, not an arbitrary 200-way tie broken by rowid
+        same_day = self.conn.execute(
+            "SELECT COUNT(*) c FROM photo_edges e "
+            "JOIN photos a ON a.id = e.photo_id_a "
+            "JOIN photos b ON b.id = e.photo_id_b "
+            "WHERE e.relation = 'same-event' "
+            "AND substr(a.taken_at,1,10) = substr(b.taken_at,1,10)"
+        ).fetchone()["c"]
+        total_event = self.conn.execute(
+            "SELECT COUNT(*) c FROM photo_edges WHERE relation='same-event'"
+        ).fetchone()["c"]
+        self.assertEqual(same_day, total_event)
+        self.assertGreater(total_event, 0)
+
+
+class PhashSweepTest(unittest.TestCase):
+    """The packed popcount sweep replaced pigeonhole bucketing; it has to give
+    the same answers imagehash's own subtraction does."""
+
+    def _hashes(self, n=120):
+        import imagehash
+        import numpy as np
+
+        rng = np.random.default_rng(1234)
+        return {
+            i: imagehash.ImageHash(rng.integers(0, 2, (8, 8)).astype(bool))
+            for i in range(1, n + 1)
+        }
+
+    def test_pairs_within_matches_brute_force(self):
+        from memoryvault.dedup import pairs_within
+
+        h = self._hashes()
+        expect = {
+            (a, b) for a in h for b in h if a < b and h[a] - h[b] <= 22
+        }
+        self.assertEqual(set(pairs_within(h, 22)), expect)
+        self.assertNotEqual(expect, set())
+
+    def test_nearest_neighbors_are_the_true_k_closest_in_band(self):
+        from memoryvault.dedup import nearest_neighbors
+
+        h = self._hashes()
+        lo, hi, k = 10, 22, 8
+        got = defaultdict(list)
+        for a, b, d in nearest_neighbors(h, lo=lo, hi=hi, k=k):
+            self.assertTrue(lo < d <= hi)
+            self.assertEqual(d, h[a] - h[b])
+            got[a].append(d)
+        for a, dists in got.items():
+            self.assertLessEqual(len(dists), k)
+            in_band = sorted(
+                h[a] - h[b] for b in h if b != a and lo < h[a] - h[b] <= hi)
+            self.assertEqual(sorted(dists), in_band[:len(dists)])
+            self.assertEqual(len(dists), min(k, len(in_band)))
+
+    def test_empty_and_single_photo_libraries_do_not_explode(self):
+        from memoryvault.dedup import nearest_neighbors, pairs_within
+
+        one = {k: v for k, v in list(self._hashes(1).items())}
+        for hashes in ({}, one):
+            self.assertEqual(list(pairs_within(hashes, 22)), [])
+            self.assertEqual(list(nearest_neighbors(hashes, 10, 22, 8)), [])
+
+
+class VaultModeTest(unittest.TestCase):
+    """MEMORYVAULT_VAULT_MODE=dir has to actually be honoured.
+
+    It was read into config and then consulted nowhere: is_mounted() was just
+    os.path.ismount(), and a plain directory is never a mountpoint. So every
+    dir-mode install (Docker, Windows, the setup wizard's default) failed
+    screening, no photo reached 'screened', and `tag` — which only takes
+    screened photos — never ran. The star map stayed empty forever.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-vault-"))
+        self._mode, self._mount = config.VAULT_MODE, config.VAULT_MOUNT
+        config.VAULT_MOUNT = self.tmp / "vault"
+
+    def tearDown(self):
+        config.VAULT_MODE, config.VAULT_MOUNT = self._mode, self._mount
+
+    def test_dir_mode_is_available_and_creates_its_subfolders(self):
+        from memoryvault import vault
+
+        config.VAULT_MODE = "dir"
+        self.assertFalse(config.VAULT_MOUNT.exists())
+        self.assertTrue(vault.is_mounted(), "dir mode must be available")
+        for sub in vault.VAULT_SUBDIRS:
+            if not sub:
+                continue
+            self.assertTrue((config.VAULT_MOUNT / sub).is_dir(), f"{sub} missing")
+
+    def test_luks_mode_still_refuses_a_plain_directory(self):
+        # the safety property: a bare dir must never pass as a LUKS vault, or
+        # flagged photos would be written out in plaintext.
+        from memoryvault import vault
+
+        config.VAULT_MODE = "luks"
+        config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(vault.is_mounted(),
+                         "a plain directory must not count as a mounted vault")
+
+    def test_dir_mode_is_idempotent(self):
+        from memoryvault import vault
+
+        config.VAULT_MODE = "dir"
+        self.assertTrue(vault.is_mounted())
+        self.assertTrue(vault.is_mounted())
+
+    def test_dir_mode_reports_unavailable_if_it_cannot_create(self):
+        from memoryvault import vault
+
+        config.VAULT_MODE = "dir"
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory")
+        config.VAULT_MOUNT = blocker
+        self.assertFalse(vault.is_mounted())
 
 
 class FreshLibraryTest(unittest.TestCase):
