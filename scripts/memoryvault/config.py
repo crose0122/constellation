@@ -34,6 +34,8 @@ OLLAMA_URL = os.environ.get(
 VISION_MODEL = os.environ.get("MEMORYVAULT_VISION_MODEL", "qwen2.5vl:7b")
 # Local weights dir for the pass-1 NSFW classifier (downloaded once, offline after)
 NSFW_MODEL_PATH = os.environ.get("MEMORYVAULT_NSFW_MODEL_PATH", "")
+# ONNX export of the same classifier (installer default: no torch in the bundle)
+NSFW_ONNX_PATH = os.environ.get("MEMORYVAULT_NSFW_ONNX_PATH", "")
 
 # Screening thresholds (SPEC.md §5.4; calibrate before the real sweep)
 # t_low 0.20 -> 0.05 (2026-07-24): NSFW misses reached the open library —

@@ -237,13 +237,25 @@ def _dead_letter_exhausted(conn) -> int:
     return cur.rowcount
 
 
-def ingest(conn, limit: int | None = None, sample: bool = False) -> dict:
-    """Ingest all (or a random sample of) discovered photo AND video files."""
+def ingest(conn, limit: int | None = None, sample: bool = False,
+           recent_first: bool = False, progress=None) -> dict:
+    """Ingest all (or a random sample of) discovered photo AND video files.
+
+    recent_first (V2 spec B6): newest files first by file mtime, so a first
+    sweep capped with `limit` fills the sky with this year's photos in minutes
+    and the archive backfills overnight. mtime is stored as text, so it is
+    ordered numerically; unknown mtimes go last.
+    progress(done, total): called every 25 files, for the installer's count-up."""
     run = start_run(conn, "ingest")
     retired = _dead_letter_exhausted(conn)
     if retired:
         print(f"  {retired} unreadable file(s) retired — `mvault retry` to release")
-    order = "ORDER BY RANDOM()" if sample else "ORDER BY id"
+    if sample:
+        order = "ORDER BY RANDOM()"
+    elif recent_first:
+        order = "ORDER BY (mtime IS NULL), CAST(mtime AS REAL) DESC, id"
+    else:
+        order = "ORDER BY id"
     sql = (
         "SELECT * FROM files WHERE disposition='discovered' "
         "AND media_kind IN ('photo','video') "
@@ -265,9 +277,11 @@ def ingest(conn, limit: int | None = None, sample: bool = False) -> dict:
             if attempts >= MAX_ATTEMPTS:
                 _dead_letter(conn, row["id"], row["source_path"])
                 stats["failed"] += 1
+        if progress and i % 25 == 0:
+            progress(i, len(rows))
         if i % 50 == 0:
             conn.commit()
-            print(f"  ingested {i}/{len(rows)}")
+            print(f"  ingested {i}/{len(rows)}", flush=True)
     conn.commit()
     finish_run(conn, run, stats)
     return stats

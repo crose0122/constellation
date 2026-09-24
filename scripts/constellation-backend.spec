@@ -7,7 +7,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 datas, binaries, hiddenimports = [], [], []
 
 # heavy native/ML packages: collect their data files, dynamic libs, submodules
-for pkg in ("insightface", "onnxruntime", "reverse_geocoder", "cv2",
+for pkg in ("insightface", "onnxruntime", "reverse_geocoder", "cv2", "cryptography",
             "pillow_heif", "imagehash", "PIL"):
     try:
         d, b, h = collect_all(pkg)

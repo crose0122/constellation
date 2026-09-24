@@ -1,2 +1,4 @@
 node_modules/
 dist/
+models/*.onnx
+models/*.part

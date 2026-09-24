@@ -154,21 +154,11 @@ async function scanStorage() {
       }
     } catch { /* ignore */ }
   } else {
-    const df = await run("bash", ["-lc", "df -kP | tail -n +2"]);
-    for (const line of df.trim().split("\n")) {
-      const p = line.split(/\s+/);
-      if (p.length < 6) continue;
-      const mount = p.slice(5).join(" ");
-      const totalGB = Math.round(parseInt(p[1]) / 1e6);
-      if (totalGB < 1) continue;   // skip tmpfs / pseudo mounts
-      if (/^\/(dev|proc|sys|run|boot|snap)(\/|$)/.test(mount)) continue;
-      drives.push({
-        path: mount, label: "",
-        totalGB,
-        freeGB: Math.round(parseInt(p[3]) / 1e6),
-        removable: /\/(media|mnt|Volumes)\//.test(mount), type: "fixed",
-      });
-    }
+    const [df, lsblk] = await Promise.all([
+      run("df", ["-kP"]),
+      run("lsblk", ["-J", "-o", "NAME,MOUNTPOINTS,HOTPLUG,RM,TRAN,LABEL"]),
+    ]);
+    drives.push(...parseDfLsblk(df, lsblk));
   }
   // likely photo folders under the user's home + drive roots
   const candidates = [];
@@ -181,6 +171,49 @@ async function scanStorage() {
     if (d.removable) candidates.push(d.path); // USB drives often hold photo archives
   }
   return { drives, photoCandidates: candidates };
+}
+
+// Linux: df gives sizes, lsblk says what's actually plugged in by USB. USB
+// drives mount under /run/media/<user>/<label> on most desktops, so /run is
+// NOT a blanket pseudo-filesystem skip (it hid the family's backup drive).
+function lsblkMounts(json) {
+  const out = new Map();
+  let tree;
+  try { tree = JSON.parse(json || "{}").blockdevices || []; } catch { return out; }
+  const walk = (ds, parent) => {
+    for (const d of ds) {
+      const tran = d.tran || (parent && parent.tran) || null;
+      const hot = !!(d.hotplug || d.rm || (parent && (parent.hotplug || parent.rm)) || tran === "usb");
+      for (const m of d.mountpoints || (d.mountpoint ? [d.mountpoint] : [])) {
+        if (m) out.set(m, { removable: hot, label: d.label || "" });
+      }
+      walk(d.children || [], parent || d);
+    }
+  };
+  walk(tree, null);
+  return out;
+}
+function parseDfLsblk(df, lsblkJson) {
+  const info = lsblkMounts(lsblkJson);
+  const drives = [];
+  for (const line of String(df || "").trim().split("\n").slice(1)) {
+    const p = line.split(/\s+/);
+    if (p.length < 6) continue;
+    const mount = p.slice(5).join(" ");
+    const totalGB = Math.round(parseInt(p[1], 10) / 1e6);
+    if (!(totalGB >= 1)) continue;                       // tmpfs / pseudo mounts
+    if (/^\/(dev|proc|sys|boot|snap)(\/|$)/.test(mount)) continue;
+    if (/^\/run(\/|$)/.test(mount) && !/^\/run\/media\//.test(mount)) continue;
+    if (/^\/(var\/lib|tmp|var\/tmp)(\/|$)/.test(mount)) continue;
+    const meta = info.get(mount) || {};
+    drives.push({
+      path: mount, label: meta.label || (/^\/(run\/)?media\//.test(mount) ? path.basename(mount) : ""),
+      totalGB, freeGB: Math.round(parseInt(p[3], 10) / 1e6),
+      removable: meta.removable != null ? meta.removable : /^\/(run\/media|media|Volumes)\//.test(mount),
+      type: "fixed",
+    });
+  }
+  return drives;
 }
 
 // ----------------------------------------------------------------- Network
@@ -255,4 +288,5 @@ async function fullScan() {
   return { sys, gpu, storage, network, recommendation: recommendModel(gpu, sys) };
 }
 
-module.exports = { fullScan, scanGPU, scanSystem, scanStorage, scanNetwork, recommendModel };
+module.exports = { fullScan, scanGPU, scanSystem, scanStorage, scanNetwork, recommendModel,
+  parseDfLsblk, lsblkMounts };
