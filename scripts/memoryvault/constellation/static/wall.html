@@ -497,10 +497,7 @@ document.getElementById("wlbRemove").addEventListener("click", async () => {
 document.getElementById("wlbVault").addEventListener("click", async () => {
   if (!wlbSlot || !wlbSlot.cur) return;
   const id = wlbSlot.cur.id;
-  const dest = confirm(
-    "Move into the Personal Vault.\n\nOK = Casey's folder · Cancel then OK = Other")
-    ? "casey"
-    : (confirm("Move to the Other folder instead?") ? "other" : null);
+  const dest = await pickVaultFolder("Move into the Personal Vault.");
   if (!dest) return;
   try {
     const r = await fetch(`/api/photo/vault?id=${id}&dest=${dest}`);

@@ -8,6 +8,13 @@ permissions:
   contents: read
 
 jobs:
+  leak-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: No household-specific data in the public repo
+        run: python3 tools/leak_scan.py
   engine:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

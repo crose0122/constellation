@@ -69,6 +69,16 @@ IMAGE_EXTENSIONS = {
 }
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".webm", ".mts"}
 
+# Named vault folders for user-initiated "move to vault" (the classifier's
+# uncertain items always go to "review"). Household-specific, so the default
+# is generic and a real install sets its own in its settings file, e.g.
+#   MEMORYVAULT_VAULT_FOLDERS=alice,other
+# Per-user vaults (V2 CP8) replace this; kept so existing vaults keep working.
+VAULT_FOLDERS = tuple(
+    f.strip().lower() for f in os.environ.get("MEMORYVAULT_VAULT_FOLDERS", "private,other").split(",")
+    if f.strip() and f.strip().isidentifier()
+)
+
 # Files bigger than this are not copied (V2 spec B5: 4 GB cap, plain warning).
 MAX_FILE_BYTES = int(os.environ.get("MEMORYVAULT_MAX_FILE_BYTES", str(4 * 1000**3)))
 
