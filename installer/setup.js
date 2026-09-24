@@ -295,11 +295,13 @@ const FOREGROUND_STAGES = [
   { args: ["ingest", "--recent-first", "--progress-json", "--limit", String(FIRST_SWEEP_LIMIT)],
     label: "Reading your newest photos", counts: true },
   { args: ["curate"], label: "Setting aside screenshots and junk" },
+  { args: ["bursts"], label: "Keeping the best shot of each burst" },
 ];
 
 const BACKGROUND_STAGES = [
   ["ingest"],                                   // the archive backfill
   ["curate"],
+  ["bursts"],                                   // keep the sharpest, park the rest
   ["screen"], ["tag"], ["geocode"], ["describe"],
   ["faces", "scan"], ["faces", "cluster"], ["edges"],
 ];

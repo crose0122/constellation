@@ -179,7 +179,16 @@ def init(db_path: Path) -> sqlite3.Connection:
     def _setup():
         conn.executescript(DDL)
         # additive migrations (CREATE TABLE won't add columns to old DBs)
-        for coldef in ("duration REAL", "faces_scanned INTEGER NOT NULL DEFAULT 0"):
+        for coldef in ("duration REAL", "faces_scanned INTEGER NOT NULL DEFAULT 0",
+                       # V2 CP3: the untouched original when library_path is a
+                       # rendition (HEIC -> JPEG) or an archive (RAW)
+                       "original_path TEXT",
+                       # V2 CP3: burst culling — parked photos keep their row
+                       # and file, they're just out of every stream
+                       "parked_by INTEGER", "sharpness REAL",
+                       # 1 = a person brought it back from parked; culling
+                       # never parks it again (their choice wins)
+                       "burst_released INTEGER NOT NULL DEFAULT 0"):
             try:
                 conn.execute(f"ALTER TABLE photos ADD COLUMN {coldef}")
             except sqlite3.OperationalError as e:

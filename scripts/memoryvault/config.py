@@ -63,9 +63,19 @@ TAG_SCHEMA_PATH = _path(
 
 IMAGE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".heic", ".heif",
-    ".raw", ".cr2", ".nef",
+    # RAW: archive-only (V2 spec B5) — recognized and kept, never shown
+    ".raw", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".dng", ".orf", ".rw2", ".raf",
+    ".pef", ".srw",
 }
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".3gp", ".webm", ".mts"}
+
+# Files bigger than this are not copied (V2 spec B5: 4 GB cap, plain warning).
+MAX_FILE_BYTES = int(os.environ.get("MEMORYVAULT_MAX_FILE_BYTES", str(4 * 1000**3)))
+
+# Burst culling (V2 spec B4): photos this close in time AND this similar are
+# one burst; the sharpest is kept and the rest are parked (never deleted).
+BURST_WINDOW_S = float(os.environ.get("MEMORYVAULT_BURST_WINDOW_S", "3"))
+BURST_PHASH_MAX = int(os.environ.get("MEMORYVAULT_BURST_PHASH_MAX", "10"))
 
 
 def library_dirs() -> dict[str, Path]:

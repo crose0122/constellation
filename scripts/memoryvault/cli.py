@@ -47,6 +47,17 @@ def cmd_ingest(args):
                      recent_first=args.recent_first, progress=progress), flush=True)
 
 
+def cmd_bursts(args):
+    from . import bursts
+
+    with _conn() as conn:
+        if args.release is not None:
+            ok = bursts.release(conn, args.release)
+            print("released" if ok else "that photo isn't parked")
+            return
+        print(bursts.cull(conn), flush=True)
+
+
 def cmd_dedup(args):
     from .dedup import dedup
 
@@ -339,6 +350,10 @@ def main(argv=None):
     i.add_argument("--progress-json", action="store_true",
                    help="emit one JSON progress line per 25 files (installer count-up)")
 
+    bu = sub.add_parser("bursts", help="keep the sharpest photo of each burst, park the rest")
+    bu.add_argument("--release", type=int, metavar="PHOTO_ID",
+                    help="bring one parked photo back")
+
     dd = sub.add_parser("dedup", help="near-duplicate detection")
     dd.add_argument("--threshold", type=int)
     dd.add_argument("--quarantine", action="store_true")
@@ -460,7 +475,7 @@ def main(argv=None):
     _apply_library_override(args)
     {
         "init": cmd_init, "discover": cmd_discover, "ingest": cmd_ingest,
-        "dedup": cmd_dedup, "screen": cmd_screen, "tag": cmd_tag,
+        "dedup": cmd_dedup, "bursts": cmd_bursts, "screen": cmd_screen, "tag": cmd_tag,
         "notes": cmd_notes, "edges": cmd_edges, "status": cmd_status,
         "retry": cmd_retry, "review": cmd_review, "vault": cmd_vault, "pin": cmd_pin, "tls": cmd_tls,
         "curate": cmd_curate, "faces": cmd_faces, "geocode": cmd_geocode,

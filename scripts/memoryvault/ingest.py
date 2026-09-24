@@ -97,7 +97,23 @@ def make_thumbnail(img: Image.Image, sha256: str) -> None:
 
 def ingest_one(conn, file_row) -> str:
     """Process one discovered file row. Returns disposition set."""
+    from . import formats
+
     src = Path(file_row["source_path"])
+    size = file_row["size"] if "size" in file_row.keys() else None
+    if size is None:
+        try:
+            size = src.stat().st_size
+        except OSError:
+            size = None
+    if size is not None and formats.too_large(size):
+        # checked BEFORE hashing: reading a 20 GB file to hash it is the cost
+        # the cap exists to avoid
+        record_error(conn, "ingest", formats.too_large_message(src, size),
+                     source_path=src)
+        conn.execute("UPDATE files SET disposition = 'too-large' WHERE id = ?",
+                     (file_row["id"],))
+        return "too_large"
     sha = sha256_file(src)
 
     # never resurrect a photo the family removed: vaulted shas live only in
@@ -130,32 +146,55 @@ def ingest_one(conn, file_row) -> str:
     if file_row["media_kind"] == "video":
         return _ingest_video(conn, file_row, src, sha)
 
+    kind = formats.kind_of(src)
+    if kind == "raw":
+        return _ingest_raw(conn, file_row, src, sha)
+
     staging = config.LIBRARY_ROOT / "staging"
     staging.mkdir(parents=True, exist_ok=True)
     staged = staging / f"{sha[:16]}-{src.name}"
     shutil.copy2(src, staged)
 
+    rendition = None
     try:
-        with Image.open(staged) as img:
+        if kind == "heic":
+            # the working file every later stage reads; the HEIC itself is
+            # kept untouched alongside it in originals/
+            rendition = staging / f"{sha[:16]}-{src.stem}.jpg"
+            formats.heic_to_jpeg(staged, rendition)
+        work = rendition or staged
+        with Image.open(work) as img:
             width, height = img.size
             phash = str(imagehash.phash(img))
-            exif = extract_exif(img)
             make_thumbnail(img, sha)
+        # EXIF comes from the ORIGINAL: it's the authority, whatever the
+        # rendition kept
+        with Image.open(staged) as orig:
+            exif = extract_exif(orig)
     except Exception:
         staged.unlink(missing_ok=True)
+        if rendition:
+            rendition.unlink(missing_ok=True)
         raise
 
     dest = library_dest(sha, src, exif["taken_at"])
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staged), str(dest))
+    library_file = dest
+    if rendition:
+        library_file = config.LIBRARY_ROOT / "renditions" / dest.relative_to(
+            config.LIBRARY_ROOT / "originals").with_suffix(".jpg")
+        library_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(rendition), str(library_file))
 
     cur = conn.execute(
         "INSERT INTO photos(sha256, phash, width, height, taken_at, camera, "
-        "gps_lat, gps_lon, media_kind, status, library_path, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?, 'photo', 'staged', ?, ?)",
+        "gps_lat, gps_lon, media_kind, status, library_path, original_path, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?, 'photo', 'staged', ?, ?, ?)",
         (
             sha, phash, width, height, exif["taken_at"], exif["camera"],
             exif["gps_lat"], exif["gps_lon"],
+            str(library_file.relative_to(config.LIBRARY_ROOT)),
             str(dest.relative_to(config.LIBRARY_ROOT)), now(),
         ),
     )
@@ -164,6 +203,31 @@ def ingest_one(conn, file_row) -> str:
         (cur.lastrowid, file_row["id"]),
     )
     return "canonical"
+
+
+def _ingest_raw(conn, file_row, src: Path, sha: str) -> str:
+    """RAW is archive-only (spec B5): kept safe, never in the family stream,
+    never screened or tagged. The row is status='archived' so no stage and no
+    display query ever selects it."""
+    from . import formats
+
+    exif = formats.raw_exif(src)
+    year = exif["taken_at"][0:4] if exif["taken_at"] else "unknown"
+    dest = config.LIBRARY_ROOT / "archive" / "raw" / year / f"{sha[:8]}-{src.name}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    cur = conn.execute(
+        "INSERT INTO photos(sha256, phash, width, height, taken_at, camera, "
+        "gps_lat, gps_lon, media_kind, status, library_path, original_path, created_at) "
+        "VALUES (?, NULL, NULL, NULL, ?, ?, ?, ?, 'raw', 'archived', NULL, ?, ?)",
+        (sha, exif["taken_at"], exif["camera"], exif["gps_lat"], exif["gps_lon"],
+         str(dest.relative_to(config.LIBRARY_ROOT)), now()),
+    )
+    conn.execute(
+        "UPDATE files SET photo_id = ?, disposition = 'archived' WHERE id = ?",
+        (cur.lastrowid, file_row["id"]),
+    )
+    return "archived"
 
 
 def _ingest_video(conn, file_row, src: Path, sha: str) -> str:
@@ -266,7 +330,7 @@ def ingest(conn, limit: int | None = None, sample: bool = False,
     rows = conn.execute(sql).fetchall()
 
     stats = {"canonical": 0, "duplicate": 0, "live_photo": 0, "vaulted": 0, "purged": 0,
-             "errors": 0, "failed": retired}
+             "archived": 0, "too_large": 0, "errors": 0, "failed": retired}
     for i, row in enumerate(rows, 1):
         try:
             stats[ingest_one(conn, row)] += 1

@@ -106,6 +106,11 @@ test("first sweep: recent-first, capped at 2,000, counts up, archive backfills o
   assert.deepEqual(ingest.argv, ["ingest", "--recent-first", "--progress-json", "--limit", "2000"]);
   assert.deepEqual(seen.filter((p) => p.count != null).map((p) => p.count), [25, 50]);
   assert.deepEqual(setup.BACKGROUND_STAGES[0], ["ingest"], "overnight chain starts with the backfill");
+  const bg = setup.BACKGROUND_STAGES.map((s) => s[0]);
+  assert.ok(bg.indexOf("bursts") > bg.indexOf("ingest") && bg.indexOf("bursts") < bg.indexOf("screen"),
+    "bursts run after ingest and before screening, so parked frames are never screened or tagged");
+  const fg = setup.FOREGROUND_STAGES.map((s) => s.args[0]);
+  assert.ok(fg.includes("bursts"), "first sweep culls bursts too, so the first sky isn't 30 copies of one moment");
 });
 
 test("progress parser ignores everything that isn't a progress line", () => {
