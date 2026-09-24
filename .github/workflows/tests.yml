@@ -20,7 +20,8 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
           pip install --quiet "pillow>=11,<13" "pillow-heif>=0.18,<2" "imagehash>=4.3,<5" \
-            "requests>=2.32,<3" "numpy>=1.26,<3" "pyyaml>=6,<7" "pytest>=8,<9"
+            "requests>=2.32,<3" "numpy>=1.26,<3" "pyyaml>=6,<7" "pytest>=8,<9" \
+            "cryptography>=43,<47" "onnxruntime>=1.18,<2"
       - name: Engine tests (incl. egress guard)
         working-directory: scripts
         run: python -m pytest tests -q
