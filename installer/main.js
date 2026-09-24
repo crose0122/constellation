@@ -6,6 +6,8 @@ const path = require("path");
 const os = require("os");
 const scan = require("./scan");
 const setup = require("./setup");
+const autostart = require("./autostart");
+const DATA_DIR = () => path.join(app.getPath("home"), "Constellation");
 
 let win;
 const APP_DIR = app.isPackaged ? path.dirname(app.getPath("exe")) : __dirname;
@@ -42,6 +44,12 @@ ipcMain.handle("pickFolder", async (_e, title) => {
   return r.canceled ? null : r.filePaths[0];
 });
 
+// --- IPC: library + family PIN + family certificate ------------------------
+ipcMain.handle("prepare", async (_e, cfg) => {
+  try { return await setup.prepare(BACKEND_DIR, DATA_DIR(), cfg); }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+
 // --- IPC: install Ollama + pull the model (streams progress) ---------------
 ipcMain.handle("install", async (_e, cfg) => {
   const send = (p) => win && win.webContents.send("progress", p);
@@ -61,8 +69,7 @@ ipcMain.handle("install", async (_e, cfg) => {
 ipcMain.handle("sweep", async (_e, cfg) => {
   const send = (p) => win && win.webContents.send("progress", p);
   try {
-    const dataDir = path.join(app.getPath("home"), "Constellation");
-    setup.writeConfig(dataDir, cfg);
+    setup.writeConfig(DATA_DIR(), cfg);
     return await setup.runFirstSweep(BACKEND_DIR, cfg, send);
   } catch (e) {
     send({ phase: "error", msg: String((e && e.message) || e) });
@@ -74,13 +81,21 @@ ipcMain.handle("sweep", async (_e, cfg) => {
 ipcMain.handle("finish", async (_e, cfg) => {
   const send = (p) => win && win.webContents.send("progress", p);
   try {
-    const dataDir = path.join(app.getPath("home"), "Constellation");
-    setup.writeConfig(dataDir, cfg);
-    setup.launchStack(BACKEND_DIR, APP_DIR, cfg, send);
+    const envFile = setup.writeConfig(DATA_DIR(), cfg);
+    const exe = setup.backendExe(BACKEND_DIR);
+    // Start on boot (systemd user unit / Scheduled Task). If that works it
+    // also starts the server now; otherwise fall back to a one-off launch so
+    // the family still sees their sky tonight, and say so.
+    let auto = { ok: false, error: "no bundled backend" };
+    if (exe) auto = await autostart.install({ exe, envFile, dataDir: DATA_DIR() });
+    if (!auto.ok) {
+      send({ phase: "launch", msg: `Start-on-boot not set up (${auto.error}); starting just for now.` });
+      setup.launchStack(BACKEND_DIR, APP_DIR, cfg, send);
+    }
     // the model-bound stages continue after this window closes
     const bg = setup.startBackgroundSweep(BACKEND_DIR, cfg);
-    return { ok: true, url: "http://localhost:8484/menu", background: !!bg.ok };
-  } catch (e) { return { ok: false, error: String(e) }; }
+    return { ok: true, autostart: auto.ok, background: !!bg.ok };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
 // --- IPC: this machine's LAN address, for the TV / phone step --------------

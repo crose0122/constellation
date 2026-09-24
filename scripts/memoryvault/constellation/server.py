@@ -421,7 +421,19 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0] if self.client_address else "?"
 
     def _is_tls(self) -> bool:
+        # native TLS listener (the default install) or the loopback TLS proxy
+        if getattr(self.server, "is_tls", False):
+            return True
         return auth.request_is_tls(self._client(), self.headers)
+
+    def _https_url(self, path: str) -> str | None:
+        port = getattr(self.server, "tls_port", None)
+        if not port:
+            return None
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        if not host or any(c in host for c in "/\\ @"):
+            return None
+        return f"https://{host}:{port}{path}"
 
     def _cookies(self) -> dict:
         return auth.parse_cookies(self.headers.get("Cookie"))
@@ -449,7 +461,14 @@ class Handler(BaseHTTPRequestHandler):
         if cls == auth.OPEN:
             return True
         if auth.require_tls() and not self._is_tls():
-            self._deny(403, "https required",
+            target = self._https_url(self.path)
+            if target and self.command == "GET" and not path.startswith("/api/"):
+                self.send_response(308)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+            self._deny(403, "https required", https=target,
                        hint="open the https:// address; the PIN never travels unencrypted")
             return False
         if not auth.pin_configured():
@@ -575,6 +594,14 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         q = parse_qs(url.query)
         if not self._gate(url.path):
+            return
+        if url.path == "/ca.pem":
+            from . import tls
+            ca = tls.paths()["ca_cert"]
+            if ca.exists():
+                self._send(200, ca.read_bytes(), "application/x-pem-file")
+            else:
+                self._send(404, b"no family certificate yet", "text/plain")
             return
         if url.path == "/login":
             self._send(200, (STATIC_DIR / "login.html").read_bytes(), "text/html")
@@ -1280,8 +1307,52 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
 
-def serve(host: str = "0.0.0.0", port: int = 8484, db_path: Path | None = None):
+class _QuietTLSServer(ThreadingHTTPServer):
+    """A device that doesn't trust the family CA yet (or a port scanner) fails
+    the handshake. That's expected on a home network, not an error worth a
+    traceback in the family's logs."""
+
+    def handle_error(self, request, client_address):
+        import ssl
+
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ssl.SSLError, ConnectionResetError, BrokenPipeError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
+def serve(host: str = "0.0.0.0", port: int = 8484, db_path: Path | None = None,
+          tls_port: int | None = 8485):
+    """Serve the open picture-frame surfaces on `port` (plain HTTP, so any TV
+    browser works) and everything on `tls_port` over HTTPS with the family
+    certificate. Private surfaces on the HTTP port redirect to HTTPS."""
+    import threading
+
+    from . import tls
+
     Handler.condb = ConstellationDB(db_path or config.DB_PATH)
     httpd = ThreadingHTTPServer((host, port), Handler)
-    print(f"The Brain: http://{host}:{port}/  (ambient mode: /ambient)")
+    httpd.is_tls = False
+    httpd.tls_port = None
+    servers = [httpd]
+    if tls_port and tls.configured():
+        try:
+            httpsd = _QuietTLSServer((host, tls_port), Handler)
+            httpsd.socket = tls.server_context().wrap_socket(httpsd.socket, server_side=True)
+        except OSError as e:
+            # a busy port must never take the picture frame down with it
+            print(f"Constellation: HTTPS port {tls_port} unavailable ({e}); "
+                  "private pages stay locked", file=sys.stderr, flush=True)
+        else:
+            httpsd.is_tls = True
+            httpsd.tls_port = tls_port
+            httpd.tls_port = tls_port
+            servers.append(httpsd)
+            print(f"Constellation: https://{host}:{tls_port}/ (family PIN pages)")
+    elif tls_port:
+        print("Constellation: no family certificate yet (run: mvault tls init); "
+              "private pages stay locked until it exists")
+    print(f"Constellation: http://{host}:{port}/  (wall / memories / ambient)")
+    for extra in servers[1:]:
+        threading.Thread(target=extra.serve_forever, daemon=True).start()
     httpd.serve_forever()

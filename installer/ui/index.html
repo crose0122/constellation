@@ -50,6 +50,23 @@
   .big { text-align: center; padding: 2rem 0; }
   .big .icon { font-size: 3rem; }
   code { background: #06101c; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+  a { color: #8fd4ff; }
+  .problem { border-color: #7a2e2e; }
+  .problem p { color: #fecaca; margin: 0.2rem 0; }
+  .pinrow input { width: 100%; background: #06101c; border: 1px solid #1c3e60; color: #fff;
+    border-radius: 8px; padding: 0.55rem 0.7rem; font-size: 1.2rem; letter-spacing: 0.3em; margin-top: 0.4rem; }
+  .err { color: #fca5a5; font-size: 0.85rem; min-height: 1.2em; margin-top: 0.4rem; }
+  details.tech { margin-top: 1rem; }
+  details.tech summary { cursor: pointer; color: #8fd4ff; font-size: 0.85rem; }
+  #techlog { background: #020810; border: 1px solid #10243a; border-radius: 8px; padding: 0.6rem;
+    max-height: 160px; overflow: auto; font: 0.75rem/1.4 ui-monospace, monospace; color: #7f9bb3;
+    white-space: pre-wrap; margin-top: 0.5rem; }
+  .sky { position: relative; height: 180px; border-radius: 12px; overflow: hidden;
+    background: radial-gradient(ellipse at 50% 100%, #0a1830, #010409 70%); margin-bottom: 0.8rem; }
+  .sky i { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff;
+    box-shadow: 0 0 6px #9fd8ff; animation: tw 2.4s ease-in-out infinite alternate; }
+  @keyframes tw { from { opacity: .35 } to { opacity: 1 } }
+  .count { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -58,10 +75,13 @@
   <div class="steps" id="steps"></div>
 </header>
 <main id="main"></main>
+<details class="tech" id="techBox" style="padding:0 2rem"><summary>Show details</summary>
+  <div id="techPanel"></div><pre id="techlog"></pre></details>
 <footer>
   <button class="ghost" id="back" style="visibility:hidden">← Back</button>
   <button class="primary" id="next">Next →</button>
 </footer>
+<script src="../decide.js"></script>
 <script src="wizard.js"></script>
 </body>
 </html>
