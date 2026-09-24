@@ -3,8 +3,8 @@
 of PR #21 showed neither was covered — a neutered guard and an inverted 503
 branch both passed the suite. These make those mutations fail."""
 
-import pathlib
 import json
+import pathlib
 import sys
 import tempfile
 import threading
