@@ -710,6 +710,233 @@ test("Windows firewall parser recognizes only exact present and absent shapes", 
     { known: true, existed: false });
 });
 
+// Review test gap: each rule below was implemented but no test failed when
+// it was removed. These pin them individually.
+test("task XML that the parser only WARNS about is still an unknown prior state", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const ns = 'xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"';
+  // xmldom recovers from these with a warning (no error) and still yields a <Task> root
+  const warnedOnly = {
+    "unquoted attribute value on root": `<Task version=1.4 ${ns}><Settings/></Task>`,
+    "unquoted attribute value on child": `<Task ${ns}><Settings Context=Author/></Task>`,
+  };
+  for (const [label, xml] of Object.entries(warnedOnly)) {
+    const parsed = a.parseTaskXml(xml);
+    assert.equal(parsed.ok, false, `${label}: parser warnings must reject`);
+    assert.match(parsed.error, /warning/i, label);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-xmlwarn-"));
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return { ok: true, code: 0, out: xml, err: "" };
+      if (cmd === "netsh" && args.includes("show")) return NETSH_ABSENT;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
+    assert.equal(result.ok, false, label);
+    assert.match(result.error, /scheduled task snapshot/i, label);
+    assert.deepEqual(fs.readdirSync(dataDir), [], `${label}: no file writes`);
+    assert.equal(calls.some((c) => c.includes("/Create") || c.includes("/Run") || c.includes("add")), false, `${label}: no mutation`);
+  }
+});
+
+test("firewall present block must contain every known field exactly once", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const lines = NETSH_PRESENT.split("\r\n");
+  const without = (prefix) => lines.filter((l) => !l.startsWith(prefix)).join("\r\n");
+  const withExtra = (after, extra) => lines.flatMap((l) => (l.startsWith(after) ? [l, extra] : [l])).join("\r\n");
+  const bad = {
+    "missing Action": without("Action:"),
+    "missing Grouping": without("Grouping:"),
+    "missing Edge traversal": without("Edge traversal:"),
+    "duplicate Enabled (conflicting)": withExtra("Enabled:", "Enabled:                              No"),
+    "duplicate Action (identical)": withExtra("Action:", "Action:                               Allow"),
+    "duplicate field replacing a missing one": without("Grouping:").replace(
+      /(Protocol:[^\r\n]*)/, "$1\r\nProtocol:                             UDP"),
+  };
+  for (const [label, out] of Object.entries(bad)) {
+    const firewall = { ok: true, code: 0, out, err: "" };
+    assert.equal(a.firewallSnapshot(firewall).known, false, `${label}: parser must report unknown`);
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-fwfields-"));
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return TASK_ABSENT;
+      if (cmd === "netsh" && args.includes("show")) return firewall;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
+    assert.equal(result.ok, false, label);
+    assert.match(result.error, /firewall snapshot/i, label);
+    assert.deepEqual(fs.readdirSync(dataDir), [], `${label}: no file writes`);
+    assert.equal(calls.some((c) => c.includes("/Create") || c.includes("/Run") || c.includes("add")), false, `${label}: no mutation`);
+  }
+  // control: the unmodified block is still known-present
+  assert.deepEqual(a.firewallSnapshot({ ok: true, code: 0, out: NETSH_PRESENT, err: "" }), { known: true, existed: true });
+});
+
+// Review gap: a Windows user name/path with non-English characters comes back
+// from `schtasks /Query /XML` in the console code page. Reading it as UTF-8
+// turned "é" into U+FFFD and aborted every reinstall over an existing task.
+// Output is now captured as raw bytes and decoded by BOM, else by the active
+// console code page; anything undecodable (or containing U+FFFD) is unknown.
+const INTL_USER = "HOME\\José";
+const INTL_XML = [
+  '<?xml version="1.0" encoding="UTF-16"?>',
+  '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+  `  <Principals><Principal id="Author"><UserId>${INTL_USER}</UserId></Principal></Principals>`,
+  "  <Actions Context=\"Author\"><Exec><Command>C:\\Users\\José\\Constellation\\start-constellation.cmd</Command></Exec></Actions>",
+  "</Task>",
+].join("\r\n");
+// single-byte fixtures: the XML is ASCII except "é"
+const singleByte = (text, eAcute) => Buffer.concat(text.split("é")
+  .flatMap((s, i) => (i ? [Buffer.from([eAcute]), Buffer.from(s, "ascii")] : [Buffer.from(s, "ascii")])));
+const FIXTURES = {
+  utf16bom: Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(INTL_XML + "\r\n", "utf16le")]),
+  utf16nobom: Buffer.from(INTL_XML + "\r\n", "utf16le"),
+  utf8bom: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(INTL_XML, "utf8")]),
+  utf8: Buffer.from(INTL_XML + "\r\n", "utf8"),
+  cp1252: singleByte(INTL_XML + "\r\n", 0xe9),
+  cp850: singleByte(INTL_XML + "\r\n", 0x82),
+};
+const chcpResult = (cp) => ({ ok: true, code: 0, out: `Active code page: ${cp}\r\n`, err: "" });
+
+test("console decoding: BOM wins and needs no code-page lookup", async () => {
+  for (const key of ["utf16bom", "utf16nobom", "utf8bom"]) {
+    let lookups = 0;
+    const d = await a.decodeConsoleOutput(FIXTURES[key], async () => { lookups++; return { ok: true, codePage: 437 }; });
+    assert.equal(d.ok, true, `${key}: ${d.error}`);
+    assert.equal(d.text.replace(/^\ufeff/, "").trim(), INTL_XML, key);
+    assert.equal(lookups, 0, `${key}: encoding is self-describing`);
+  }
+});
+
+test("console decoding: no BOM decodes with the active console code page", async () => {
+  for (const [key, cp] of [["utf8", 65001], ["cp1252", 1252], ["cp850", 850], ["cp850", 437]]) {
+    const d = await a.decodeConsoleOutput(FIXTURES[key], async () => ({ ok: true, codePage: cp }));
+    assert.equal(d.ok, true, `${key}@${cp}: ${d.error}`);
+    assert.equal(d.text.trim(), INTL_XML, `${key}@${cp}`);
+    assert.match(d.text, /<UserId>HOME\\José<\/UserId>/);
+  }
+  // pure ASCII needs no lookup at all
+  let lookups = 0;
+  const ascii = await a.decodeConsoleOutput(Buffer.from(VALID_TASK_XML.replace("—", "-")), async () => { lookups++; return { ok: false }; });
+  assert.equal(ascii.ok, true, ascii.error);
+  assert.equal(lookups, 0);
+});
+
+test("console decoding fails closed: bad bytes, unknown or unreadable code page, U+FFFD", async () => {
+  const cases = {
+    "cp1252 bytes read as UTF-8": [FIXTURES.cp1252, { ok: true, codePage: 65001 }],
+    "truncated UTF-16LE with BOM": [FIXTURES.utf16bom.subarray(0, FIXTURES.utf16bom.length - 1), { ok: true, codePage: 437 }],
+    "byte undefined in windows-1253": [Buffer.from([0x3c, 0x61, 0xd2, 0x3e]), { ok: true, codePage: 1253 }],
+    "unsupported code page": [FIXTURES.cp1252, { ok: true, codePage: 12345 }],
+    "code page lookup failed": [FIXTURES.cp1252, { ok: false, error: "chcp failed" }],
+    "code page lookup failed, bytes happen to be valid UTF-8": [FIXTURES.utf8, { ok: false, error: "chcp failed" }],
+    "code page lookup threw": [FIXTURES.utf8, null],
+    "literal U+FFFD in UTF-8": [Buffer.from("<a>\ufffd</a>", "utf8"), { ok: true, codePage: 65001 }],
+    "NUL byte inside single-byte text": [Buffer.from([0x3c, 0x61, 0x00, 0x3e, 0xe9]), { ok: true, codePage: 437 }],
+  };
+  for (const [label, [buf, cp]] of Object.entries(cases)) {
+    const d = await a.decodeConsoleOutput(buf, async () => { if (cp == null) throw new Error("spawn failed"); return cp; });
+    assert.equal(d.ok, false, label);
+    assert.ok(d.error, label);
+  }
+});
+
+test("chcp output parsing reads the one number in English or localized text, else unknown", () => {
+  assert.deepEqual(a.consoleCodePage(chcpResult(850)), { ok: true, codePage: 850 });
+  assert.deepEqual(a.consoleCodePage({ ok: true, code: 0, out: "Page de codes active : 1252\r\n", err: "" }), { ok: true, codePage: 1252 });
+  assert.deepEqual(a.consoleCodePage({ ok: true, code: 0, out: "Aktive Codepage: 65001.\r\n", err: "" }), { ok: true, codePage: 65001 });
+  for (const r of [
+    { ok: false, code: 1, out: "Active code page: 850", err: "" },
+    { ok: true, code: 0, out: "Active code page: 850", err: "noise" },
+    { ok: true, code: 0, out: "", err: "" },
+    { ok: true, code: 0, out: "Active code page: 850 of 2", err: "" },
+  ]) assert.equal(a.consoleCodePage(r).ok, false, JSON.stringify(r));
+});
+
+test("task snapshot never accepts text containing U+FFFD or a lossy '?' in an identity field", () => {
+  const fffd = INTL_XML.replace("é", "\ufffd");
+  const snap = a.scheduledTaskSnapshot({ ok: true, code: 0, out: fffd, err: "" });
+  assert.equal(snap.known, false);
+  assert.match(snap.error, /U\+FFFD/, "rejected by the explicit decode check, not only by a parser side effect");
+  assert.equal(a.scheduledTaskSnapshot({ ok: true, code: 0, out: INTL_XML.replace(/é/g, "?"), err: "" }).known, false,
+    "a code page that cannot represent the name makes schtasks print '?'; Windows names never contain '?'");
+  assert.equal(a.scheduledTaskSnapshot({ ok: true, code: 0, out: INTL_XML, err: "" }).known, true);
+});
+
+test("Windows reinstall over an existing task with a non-English user name restores it exactly", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const [key, cp] of [["utf16bom", null], ["utf8", 65001], ["cp1252", 1252], ["cp850", 850]]) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-intl-"));
+    let restored = null, creates = 0;
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return { ok: true, code: 0, out: FIXTURES[key], err: "" };
+      if (cmd === "cmd.exe" && args.includes("chcp")) return cp == null ? { ok: false, code: 1, out: "", err: "no" } : chcpResult(cp);
+      if (cmd === "netsh" && args.includes("show")) return NETSH_ABSENT;
+      if (cmd === "schtasks.exe" && args[0] === "/Create" && ++creates === 2) restored = fs.readFileSync(args[4]);
+      if (cmd === "schtasks.exe" && args[0] === "/Run") return { ok: false, code: 1, out: "", err: "run failed" };
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: INTL_USER });
+    assert.equal(r.ok, false, key);
+    assert.match(r.error, /\/Run/, `${key}: got past discovery (${r.error})`);
+    assert.ok(restored, `${key}: prior task re-created on rollback`);
+    assert.equal(restored.subarray(2).toString("utf16le"), INTL_XML, `${key}: restored byte-exact with the real name`);
+  }
+});
+
+test("Windows aborts before any write when the task query cannot be decoded", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const [bytes, chcp] of [[FIXTURES.cp1252, chcpResult(65001)], [FIXTURES.cp1252, chcpResult(12345)],
+    [FIXTURES.cp1252, { ok: false, code: 1, out: "", err: "denied" }],
+    [FIXTURES.utf8, { ok: false, code: 1, out: "", err: "denied" }]]) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-intl-"));
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return { ok: true, code: 0, out: bytes, err: "" };
+      if (cmd === "cmd.exe" && args.includes("chcp")) return chcp;
+      if (cmd === "netsh" && args.includes("show")) return NETSH_ABSENT;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: INTL_USER });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /scheduled task snapshot/i);
+    assert.deepEqual(fs.readdirSync(dataDir), []);
+    assert.equal(calls.some((c) => c.includes("/Create") || c.includes("/Run") || c.includes("add")), false);
+  }
+});
+
+test("default runner captures schtasks output as raw bytes (real child process)", async () => {
+  if (process.platform === "win32") return;
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-raw-"));
+  const bindir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-bin-raw-"));
+  const fixture = path.join(bindir, "task.bin");
+  fs.writeFileSync(fixture, FIXTURES.cp1252);
+  const restoredCopy = path.join(bindir, "restored.xml");
+  const write = (name, body) => { fs.writeFileSync(path.join(bindir, name), `#!/bin/sh\n${body}\n`); fs.chmodSync(path.join(bindir, name), 0o755); };
+  write("schtasks.exe", `case "$1" in
+  /Query) cat ${JSON.stringify(fixture)}; exit 0 ;;
+  /Create) cp "$5" ${JSON.stringify(restoredCopy)}; exit 0 ;;
+esac
+exit 0`);
+  write("cmd.exe", 'echo "Active code page: 1252"');
+  write("netsh", `if [ "$3" = "show" ]; then echo "No rules match the specified criteria."; exit 1; fi\nexit 0`);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bindir}:${savedPath}`;
+  try {
+    const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { user: INTL_USER });
+    assert.equal(r.ok, true, r.error || "");
+    assert.equal((await r.rollback()).ok, true);
+    assert.equal(fs.readFileSync(restoredCopy).subarray(2).toString("utf16le"), INTL_XML);
+  } finally { process.env.PATH = savedPath; }
+});
+
 test("the XML parser ships with the app: @xmldom/xmldom is a runtime dependency", () => {
   const fs = require("fs"), path = require("path");
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
