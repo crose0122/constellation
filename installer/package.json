@@ -28,6 +28,7 @@
       "preload.js",
       "scan.js",
       "setup.js",
+      "finish-install.js",
       "decide.js",
       "autostart.js",
       "ui/**"

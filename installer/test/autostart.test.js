@@ -274,10 +274,162 @@ test("installWindows happy path: create, then run, then firewall", async () => {
     const calls = fs.readFileSync(log, "utf8");
     const createAt = calls.indexOf("/Create");
     const runAt = calls.indexOf("/Run");
-    const fwAt = calls.indexOf("advfirewall");
+    const fwAt = calls.indexOf("advfirewall firewall add");
     assert.ok(createAt >= 0 && runAt > createAt && fwAt > runAt,
-      `expected create -> run -> firewall, got: ${calls}`);
+      `expected preflight, then create -> run -> firewall add, got: ${calls}`);
     assert.equal(r.task, a.TASK);
     assert.equal(r.started, true, "success reports that startup was verified");
   } finally { process.env.PATH = savedPath; }
+});
+
+// Transactional repair regressions. Injected runners keep these platform
+// independent while temporary files exercise real restore/delete behavior.
+test("Linux success reports started; failed linger earns login, never boot", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
+  const run = async (cmd) => ({ ok: cmd !== "loginctl", out: "", err: cmd === "loginctl" ? "denied" : "" });
+  const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(r.ok, true);
+  assert.equal(r.started, true);
+  assert.equal(r.startsOnLogin, true);
+  assert.equal(r.startsOnBoot, false);
+});
+
+test("Linux verification failure restores a prior managed unit and removes a new unit", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const prior of [a.MARKER + "\n[Service]\nExecStart=/old\n", null]) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
+    const dir = path.join(home, ".config", "systemd", "user");
+    fs.mkdirSync(dir, { recursive: true });
+    const unit = path.join(dir, a.UNIT);
+    if (prior != null) fs.writeFileSync(unit, prior);
+    const run = async (cmd) => cmd === "systemd-analyze"
+      ? { ok: false, out: "", err: "invalid unit" }
+      : { ok: true, out: "", err: "" };
+    const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+    assert.equal(r.ok, false);
+    assert.equal(fs.existsSync(unit), prior != null);
+    if (prior != null) assert.equal(fs.readFileSync(unit, "utf8"), prior);
+  }
+});
+
+test("Linux command throw is a failed install and restores the unit", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
+  const run = async () => { throw new Error("verify timed out"); };
+  const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /timed out/);
+  assert.equal(fs.existsSync(path.join(home, ".config", "systemd", "user", a.UNIT)), false);
+});
+
+test("Linux readiness rollback restores prior unit and its enabled/running state", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
+  const dir = path.join(home, ".config", "systemd", "user");
+  fs.mkdirSync(dir, { recursive: true });
+  const unit = path.join(dir, a.UNIT);
+  const prior = a.MARKER + "\n[Service]\nExecStart=/old\n";
+  fs.writeFileSync(unit, prior);
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("is-enabled")) return { ok: true, out: "enabled\n", err: "" };
+    if (args.includes("is-active")) return { ok: true, out: "active\n", err: "" };
+    return { ok: true, out: "", err: "" };
+  };
+  const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(r.ok, true);
+  assert.equal((await r.rollback()).ok, true);
+  assert.equal(fs.readFileSync(unit, "utf8"), prior);
+  assert.ok(calls.some((c) => c.includes("enable") && !c.includes("--now")), "prior enabled state restored");
+  assert.ok(calls.some((c) => c.includes("start")), "prior active state restored");
+});
+
+function windowsRun({ taskXml = null, firewallExists = false, cleanupFails = [] } = {}) {
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    const joined = [cmd, ...args].join(" ");
+    if (cmd === "schtasks.exe" && args[0] === "/Query")
+      return taskXml == null ? { ok: false, out: "", err: "not found" } : { ok: true, out: taskXml, err: "" };
+    if (cmd === "netsh" && args.includes("show"))
+      return firewallExists ? { ok: true, out: "Rule Name: Constellation", err: "" } : { ok: false, out: "", err: "No rules match" };
+    if (cleanupFails.some((x) => joined.includes(x))) return { ok: false, out: "", err: `${joined} cleanup failed` };
+    return { ok: true, out: "", err: "" };
+  };
+  return { run, calls };
+}
+
+test("Windows /Run failure restores preexisting task, launcher, and XML", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-tx-"));
+  const launcher = path.join(dataDir, "start-constellation.cmd");
+  const xml = path.join(dataDir, "constellation-task.xml");
+  fs.writeFileSync(launcher, "old launcher");
+  fs.writeFileSync(xml, "old xml");
+  const fake = windowsRun({ taskXml: "<Task>old task</Task>", firewallExists: true });
+  const run = async (cmd, args) => cmd === "schtasks.exe" && args[0] === "/Run"
+    ? { ok: false, out: "", err: "run failed" } : fake.run(cmd, args);
+  const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
+  assert.equal(r.ok, false);
+  assert.equal(fs.readFileSync(launcher, "utf8"), "old launcher");
+  assert.equal(fs.readFileSync(xml, "utf8"), "old xml");
+  assert.equal(fake.calls.filter((c) => c[0] === "schtasks.exe" && c[1] === "/Create").length, 2,
+    "second create restores the prior task");
+});
+
+test("Windows command throw is rolled back instead of escaping", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-tx-"));
+  const fake = windowsRun();
+  const run = async (cmd, args) => {
+    if (cmd === "schtasks.exe" && args[0] === "/Run") throw new Error("task timeout");
+    return fake.run(cmd, args);
+  };
+  const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /task timeout/);
+  assert.equal(fs.existsSync(path.join(dataDir, "start-constellation.cmd")), false);
+});
+
+test("Windows firewall failure removes resources created by this attempt", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-tx-"));
+  const fake = windowsRun();
+  const run = async (cmd, args) => cmd === "netsh" && args.includes("add")
+    ? { ok: false, out: "", err: "firewall add failed" } : fake.run(cmd, args);
+  const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
+  assert.equal(r.ok, false);
+  assert.equal(fs.existsSync(path.join(dataDir, "start-constellation.cmd")), false);
+  assert.equal(fs.existsSync(path.join(dataDir, "constellation-task.xml")), false);
+  assert.ok(fake.calls.some((c) => c[0] === "schtasks.exe" && c[1] === "/Delete"));
+});
+
+test("Windows readiness rollback removes only newly-created firewall state", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const firewallExists of [false, true]) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-tx-"));
+    const fake = windowsRun({ firewallExists });
+    const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run: fake.run, user: "HOME\\x" });
+    assert.equal(r.ok, true);
+    const rolled = await r.rollback();
+    assert.equal(rolled.ok, true);
+    const deletedFirewall = fake.calls.some((c) => c[0] === "netsh" && c.includes("delete"));
+    assert.equal(deletedFirewall, !firewallExists);
+  }
+});
+
+test("Windows rollback attempts every cleanup and reports all failures", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-tx-"));
+  const fake = windowsRun({ cleanupFails: ["/Delete", "firewall delete"] });
+  const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run: fake.run, user: "HOME\\x" });
+  assert.equal(r.ok, true);
+  const rolled = await r.rollback();
+  assert.equal(rolled.ok, false);
+  assert.match(rolled.error, /task/i);
+  assert.match(rolled.error, /firewall/i);
+  assert.equal(fs.existsSync(path.join(dataDir, "start-constellation.cmd")), false,
+    "file cleanup still runs after command cleanup failures");
 });

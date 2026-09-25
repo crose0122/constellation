@@ -247,10 +247,9 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
 
 // Can we actually reach the server? Startup claims are earned, not assumed:
 // the finish screen asks this before it says anything is running. The wall
-// answers without credentials (that is the picture-frame contract), so ANY
-// HTTP response proves the server is alive; only "no connection at all" means
-// not up. Retries inside the timeout budget — a just-spawned server needs a
-// few seconds to bind.
+// answers without credentials (that is the picture-frame contract).  Require
+// its exact status, media type, and title marker: another service or proxy can
+// occupy the port and return a perfectly healthy 404.
 function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000) {
   const started = Date.now();
   return new Promise((resolve) => {
@@ -259,10 +258,25 @@ function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000) {
     const tryOnce = () => {
       const req = require("http").get(
         { host, port: httpPort, path: "/wall", timeout: 2500 },
-        (res) => { res.resume(); finish(true); });
+        (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            if (body.length < 65536) body += chunk;
+            if (body.length >= 65536) res.destroy();
+          });
+          res.on("end", () => {
+            const type = String(res.headers["content-type"] || "").toLowerCase();
+            const ready = res.statusCode === 200 && type.startsWith("text/html") &&
+              body.includes("<title>Constellation — the wall</title>");
+            if (ready) return finish(true);
+            if (Date.now() - started >= timeoutMs) return finish(false);
+            setTimeout(tryOnce, Math.min(1000, timeoutMs));
+          });
+        });
       req.on("error", () => {
         if (Date.now() - started >= timeoutMs) return finish(false);
-        setTimeout(tryOnce, 1000);
+        setTimeout(tryOnce, Math.min(1000, timeoutMs));
       });
       req.on("timeout", () => { req.destroy(); }); // fires the error handler
     };

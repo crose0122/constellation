@@ -113,16 +113,19 @@ function finishUrls(lan, httpPort = 8484, tlsPort = 8485) {
 
 // The finish screen's truth table (task #130). Every claim the wizard makes
 // about startup must be earned by a verified fact:
-//   - startsItself  only when start-on-boot was installed (Linux unit verified,
-//     Windows task created) — never inferred from "the launch worked once";
-//   - running       only when the server actually answered (serverUp probe) or
-//     startup was verified end-to-end;
+//   - startsItself  only when start-on-boot was verified — start-on-login is a
+//     separate, weaker claim and never inferred from "the launch worked once";
+//   - running       only when the exact Constellation readiness probe passes;
 //   - ok=false      only when nothing is running — the family still deserves a
 //     working wall tonight, so a one-off launch that works is a success that
 //     honestly says it won't survive a reboot.
-function finishClaims({ autostartOk, started, serverUp, background }) {
-  const running = !!(serverUp || (started && autostartOk));
-  const startsItself = !!autostartOk;
+function finishClaims({ autostartOk, startsOnLogin, startsOnBoot, serverUp, background }) {
+  // Process creation is not readiness.  Only the product-specific HTTP probe
+  // may earn a claim that Constellation is running.
+  const running = !!serverUp;
+  const startsOnBootValue = !!(autostartOk && startsOnBoot);
+  const startsOnLoginValue = !!(autostartOk && (startsOnLogin || startsOnBoot));
+  const startsItself = startsOnBootValue;
   const ok = running;
   let headline;
   if (running) headline = "You're all set";
@@ -130,15 +133,35 @@ function finishClaims({ autostartOk, started, serverUp, background }) {
   const bootWarning = (ok && !startsItself)
     ? "Constellation is running now, but it won't start by itself every time this computer turns on."
     : null;
+  const startupNote = startsOnBootValue
+    ? "Constellation starts whenever this computer turns on."
+    : startsOnLoginValue
+      ? "Constellation starts when this user signs in."
+      : null;
   const retryHint = ok ? null
     : "Open \"Show details\" for what to try next, then click Try again.";
-  return { ok, running, startsItself, headline, bootWarning, retryHint,
+  return { ok, running, startsItself, startsOnLogin: startsOnLoginValue,
+    startsOnBoot: startsOnBootValue, startupNote, headline, bootWarning, retryHint,
     background: !!background };
+}
+
+function finishCopy({ startsOnLogin, startsOnBoot, background, backgroundStarted }) {
+  const startup = startsOnBoot
+    ? "Constellation starts by itself whenever this computer turns on."
+    : startsOnLogin
+      ? "Constellation starts when this user signs in."
+      : "Constellation is running now, but it won't start by itself next time.";
+  const progress = background
+    ? "Your newest photos are in; the rest arrive overnight on their own."
+    : backgroundStarted
+      ? "Background processing started for this session. Keep this computer on and signed in, and check Progress."
+      : "Background processing is not verified. Keep this computer on and use Progress to continue.";
+  return { startup, progress };
 }
 
 const API = { MIN_RAM_GB, MIN_FREE_GB, hardwareFloor, pickDriveFor, recommendMode,
   storageMath, validatePin, validateBackupTarget, finishUrls, defaultSourceChecked,
-  finishClaims };
+  finishClaims, finishCopy };
 // Node (main process, tests) and the wizard page (plain <script>) share this file.
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 else if (typeof window !== "undefined") window.decide = API;

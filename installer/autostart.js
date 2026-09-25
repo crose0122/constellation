@@ -98,56 +98,173 @@ function windowsLauncher({ exe, env, httpPort = 8484, tlsPort = 8485 }) {
   return lines.join("\r\n") + "\r\n";
 }
 
-async function installLinux({ exe, envFile }) {
-  const dir = path.join(os.homedir(), ".config", "systemd", "user");
+function fileSnapshot(file) {
+  return fs.existsSync(file) ? fs.readFileSync(file) : null;
+}
+
+function restoreFile(file, snapshot, errors, label) {
+  try {
+    if (snapshot == null) {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } else {
+      fs.writeFileSync(file, snapshot);
+    }
+  } catch (e) { errors.push(`${label}: ${String((e && e.message) || e)}`); }
+}
+
+function rollbackResult(errors) {
+  return errors.length ? { ok: false, error: errors.join("; ") } : { ok: true };
+}
+
+async function installLinux({ exe, envFile }, runtime = {}) {
+  const rawRun = runtime.run || sh;
+  const run = async (...args) => {
+    try { return await rawRun(...args); }
+    catch (e) { return { ok: false, out: "", err: String((e && e.message) || e) }; }
+  };
+  const home = runtime.home || os.homedir();
+  const user = runtime.user || os.userInfo().username;
+  const dir = path.join(home, ".config", "systemd", "user");
   fs.mkdirSync(dir, { recursive: true });
   const unitPath = path.join(dir, UNIT);
   const existing = fs.existsSync(unitPath) ? fs.readFileSync(unitPath, "utf8") : null;
   if (!mayWriteUnit(existing)) {
     return { ok: false, error: `a Constellation service set up by hand already exists (${unitPath}); leaving it alone` };
   }
+  let priorEnabled = false;
+  let priorActive = false;
+  if (existing != null) {
+    priorEnabled = (await run("systemctl", ["--user", "is-enabled", UNIT])).ok;
+    priorActive = (await run("systemctl", ["--user", "is-active", UNIT])).ok;
+  }
   fs.writeFileSync(unitPath, systemdUnit({ exe, envFile }));
   // Verify BEFORE enabling: systemd-analyze warns about an unknown key even
   // when it exits 0, and a warned unit can mean a protection that never runs
   // (StartLimitIntervalSec in the wrong section did exactly that). A silent
   // verify is the only "yes".
-  const verify = await sh("systemd-analyze", ["verify", unitPath]);
+  const verify = await run("systemd-analyze", ["verify", unitPath]);
   if (!verify.ok || verify.err.trim() !== "") {
-    return { ok: false, error: `systemd-analyze verify did not pass: ${verify.err.trim() || "exit " + "nonzero"}` };
+    const errors = [];
+    restoreFile(unitPath, existing == null ? null : Buffer.from(existing), errors, "restore unit");
+    return { ok: false, error: `systemd-analyze verify did not pass: ${verify.err.trim() || "exit nonzero"}` +
+      (errors.length ? `; rollback failed: ${errors.join("; ")}` : "") };
   }
   const steps = [
     ["systemctl", ["--user", "daemon-reload"]],
     ["systemctl", ["--user", "enable", "--now", UNIT]],
   ];
   for (const [c, a] of steps) {
-    const r = await sh(c, a);
-    if (!r.ok) return { ok: false, error: `${c} ${a.join(" ")}: ${r.err.trim()}` };
+    const r = await run(c, a);
+    if (!r.ok) {
+      const errors = [];
+      if (c === "systemctl" && a.includes("enable"))
+        await run("systemctl", ["--user", "disable", "--now", UNIT]);
+      restoreFile(unitPath, existing == null ? null : Buffer.from(existing), errors, "restore unit");
+      await run("systemctl", ["--user", "daemon-reload"]);
+      return { ok: false, error: `${c} ${a.join(" ")}: ${r.err.trim()}` +
+        (errors.length ? `; rollback failed: ${errors.join("; ")}` : "") };
+    }
   }
   // linger = keep running with nobody logged in (a server in a closet). Best
   // effort: it needs polkit on some distros; without it we still start at login.
-  const linger = await sh("loginctl", ["enable-linger", os.userInfo().username]);
-  return { ok: true, linger: linger.ok, unit: unitPath };
+  const linger = await run("loginctl", ["enable-linger", user]);
+  const rollback = async () => {
+    const errors = [];
+    const disabled = await run("systemctl", ["--user", "disable", "--now", UNIT]);
+    if (!disabled.ok) errors.push(`disable unit: ${disabled.err.trim()}`);
+    restoreFile(unitPath, existing == null ? null : Buffer.from(existing), errors, "restore unit");
+    const reload = await run("systemctl", ["--user", "daemon-reload"]);
+    if (!reload.ok) errors.push(`daemon-reload: ${reload.err.trim()}`);
+    if (existing != null && priorEnabled) {
+      const enabled = await run("systemctl", ["--user", "enable", UNIT]);
+      if (!enabled.ok) errors.push(`restore enabled unit: ${enabled.err.trim()}`);
+    }
+    if (existing != null && priorActive) {
+      const active = await run("systemctl", ["--user", "start", UNIT]);
+      if (!active.ok) errors.push(`restore active unit: ${active.err.trim()}`);
+    }
+    return rollbackResult(errors);
+  };
+  return { ok: true, linger: linger.ok, unit: unitPath, started: true,
+    startsOnLogin: true, startsOnBoot: linger.ok, rollback };
 }
 
-async function installWindows({ exe, env, dataDir }) {
+async function installWindows({ exe, env, dataDir }, runtime = {}) {
+  const rawRun = runtime.run || sh;
+  const runCommand = async (...args) => {
+    try { return await rawRun(...args); }
+    catch (e) { return { ok: false, out: "", err: String((e && e.message) || e) }; }
+  };
   const launcher = path.join(dataDir, "start-constellation.cmd");
-  fs.writeFileSync(launcher, windowsLauncher({ exe, env }));
+  const previousLauncher = fileSnapshot(launcher);
   const xmlPath = path.join(dataDir, "constellation-task.xml");
-  const user = `${process.env.USERDOMAIN || os.hostname()}\\${os.userInfo().username}`;
+  const previousXml = fileSnapshot(xmlPath);
+  const previousTask = await runCommand("schtasks.exe", ["/Query", "/TN", TASK, "/XML"]);
+  const taskXml = previousTask.ok && previousTask.out.trim() ? previousTask.out : null;
+  const previousFirewall = await runCommand("netsh", ["advfirewall", "firewall", "show", "rule", "name=Constellation"]);
+  const firewallExisted = previousFirewall.ok && /Constellation/i.test(previousFirewall.out);
+  let taskChanged = false;
+  let firewallAdded = false;
+  let rolledBack = false;
+
+  const rollback = async () => {
+    if (rolledBack) return { ok: true };
+    rolledBack = true;
+    const errors = [];
+    if (firewallAdded) {
+      const r = await runCommand("netsh", ["advfirewall", "firewall", "delete", "rule", "name=Constellation"]);
+      if (!r.ok) errors.push(`firewall cleanup: ${r.err.trim()}`);
+    }
+    if (taskChanged) {
+      if (taskXml != null) {
+        const restoreXml = path.join(dataDir, ".constellation-task-restore.xml");
+        try {
+          fs.writeFileSync(restoreXml, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(taskXml, "utf16le")]));
+          const r = await runCommand("schtasks.exe", ["/Create", "/TN", TASK, "/XML", restoreXml, "/F"]);
+          if (!r.ok) errors.push(`task restore: ${r.err.trim()}`);
+        } catch (e) { errors.push(`task restore: ${String((e && e.message) || e)}`); }
+        finally { try { if (fs.existsSync(restoreXml)) fs.unlinkSync(restoreXml); } catch (e) {
+          errors.push(`task restore file cleanup: ${String((e && e.message) || e)}`); } }
+      } else {
+        const r = await runCommand("schtasks.exe", ["/Delete", "/TN", TASK, "/F"]);
+        if (!r.ok) errors.push(`task cleanup: ${r.err.trim()}`);
+      }
+    }
+    restoreFile(launcher, previousLauncher, errors, "restore launcher");
+    restoreFile(xmlPath, previousXml, errors, "restore task XML");
+    return rollbackResult(errors);
+  };
+
+  fs.writeFileSync(launcher, windowsLauncher({ exe, env }));
+  const user = runtime.user || `${process.env.USERDOMAIN || os.hostname()}\\${os.userInfo().username}`;
   // UTF-16LE with BOM, as schtasks expects for the encoding the XML declares
   fs.writeFileSync(xmlPath, Buffer.concat([Buffer.from([0xff, 0xfe]),
     Buffer.from(windowsTaskXml({ launcher, user }), "utf16le")]));
-  const create = await sh("schtasks.exe", ["/Create", "/TN", TASK, "/XML", xmlPath, "/F"]);
-  if (!create.ok) return { ok: false, error: `schtasks /Create: ${create.err.trim()}` };
+  const create = await runCommand("schtasks.exe", ["/Create", "/TN", TASK, "/XML", xmlPath, "/F"]);
+  taskChanged = create.ok;
+  if (!create.ok) {
+    const rb = await rollback();
+    return { ok: false, error: `schtasks /Create: ${create.err.trim()}` + (!rb.ok ? `; rollback failed: ${rb.error}` : "") };
+  }
   // Startup must be verified, not assumed: a task that exists but refuses to
   // start is a picture frame that stays dark after the next reboot.
-  const run = await sh("schtasks.exe", ["/Run", "/TN", TASK]);
-  if (!run.ok) return { ok: false, error: `schtasks /Run: ${run.err.trim()}` };
+  const run = await runCommand("schtasks.exe", ["/Run", "/TN", TASK]);
+  if (!run.ok) {
+    const rb = await rollback();
+    return { ok: false, error: `schtasks /Run: ${run.err.trim()}` + (!rb.ok ? `; rollback failed: ${rb.error}` : "") };
+  }
   // Windows Firewall: private networks only (the family LAN), never public.
-  const fw = await sh("netsh", ["advfirewall", "firewall", "add", "rule", "name=Constellation",
-    "dir=in", "action=allow", "protocol=TCP", "localport=8484,8485", "profile=private"]);
-  if (!fw.ok) return { ok: false, error: `firewall rule failed: ${fw.err.trim()}` };
-  return { ok: true, task: TASK, started: true };
+  if (!firewallExisted) {
+    const fw = await runCommand("netsh", ["advfirewall", "firewall", "add", "rule", "name=Constellation",
+      "dir=in", "action=allow", "protocol=TCP", "localport=8484,8485", "profile=private"]);
+    firewallAdded = fw.ok;
+    if (!fw.ok) {
+      const rb = await rollback();
+      return { ok: false, error: `firewall rule failed: ${fw.err.trim()}` + (!rb.ok ? `; rollback failed: ${rb.error}` : "") };
+    }
+  }
+  return { ok: true, task: TASK, started: true, startsOnLogin: true,
+    startsOnBoot: false, rollback };
 }
 
 function parseEnvFile(text) {
