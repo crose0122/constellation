@@ -346,6 +346,65 @@ test("Linux readiness rollback restores prior unit and its enabled/running state
   assert.ok(calls.some((c) => c.includes("start")), "prior active state restored");
 });
 
+test("Linux enable --now failure restores exact prior state and aggregates every rollback failure", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
+  const dir = path.join(home, ".config", "systemd", "user");
+  fs.mkdirSync(dir, { recursive: true });
+  const unit = path.join(dir, a.UNIT);
+  const prior = Buffer.concat([Buffer.from(a.MARKER + "\n[Service]\nExecStart=/old\n"), Buffer.from([0xff, 0x00, 0xfe])]);
+  fs.writeFileSync(unit, prior);
+  const calls = [];
+  let reloads = 0;
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("is-enabled")) return { ok: false, out: "disabled\n", err: "" };
+    if (args.includes("is-active")) return { ok: false, out: "inactive\n", err: "" };
+    if (args.includes("enable") && args.includes("--now")) return { ok: false, out: "", err: "enable exploded" };
+    if (args.includes("disable") && args.includes("--now")) return { ok: false, out: "", err: "disable cleanup failed" };
+    if (args.includes("daemon-reload") && ++reloads > 1) return { ok: false, out: "", err: "reload cleanup failed" };
+    if (args.includes("disable")) return { ok: false, out: "", err: "disable restore failed" };
+    if (args.includes("stop")) return { ok: false, out: "", err: "stop restore failed" };
+    return { ok: true, out: "", err: "" };
+  };
+  const result = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(result.ok, false);
+  assert.deepEqual(fs.readFileSync(unit), prior);
+  assert.match(result.error, /enable exploded/);
+  assert.match(result.error, /disable cleanup failed/);
+  assert.match(result.error, /reload cleanup failed/);
+  assert.match(result.error, /disable restore failed/);
+  assert.match(result.error, /stop restore failed/);
+  assert.ok(calls.some((c) => c.includes("stop")), "inactive state is restored explicitly after a partial start");
+});
+
+test("Linux readiness rollback attempts enabled and active restoration after earlier cleanup failures", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
+  const dir = path.join(home, ".config", "systemd", "user");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, a.UNIT), a.MARKER + "\n[Service]\nExecStart=/old\n");
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("is-enabled") || args.includes("is-active")) return { ok: true, out: "yes", err: "" };
+    if (args.includes("disable") && args.includes("--now")) return { ok: false, out: "", err: "disable failed" };
+    if (args.includes("daemon-reload") && calls.filter((c) => c.includes("daemon-reload")).length > 1)
+      return { ok: false, out: "", err: "reload failed" };
+    if (args.includes("enable") && !args.includes("--now")) return { ok: false, out: "", err: "enable restore failed" };
+    if (args.includes("start")) return { ok: false, out: "", err: "start restore failed" };
+    return { ok: true, out: "", err: "" };
+  };
+  const installed = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(installed.ok, true);
+  const rolled = await installed.rollback();
+  assert.equal(rolled.ok, false);
+  for (const message of ["disable failed", "reload failed", "enable restore failed", "start restore failed"])
+    assert.match(rolled.error, new RegExp(message));
+  assert.ok(calls.some((c) => c.includes("enable") && !c.includes("--now")));
+  assert.ok(calls.some((c) => c.includes("start")));
+});
+
 function windowsRun({ taskXml = null, firewallExists = false, cleanupFails = [] } = {}) {
   const calls = [];
   const run = async (cmd, args) => {
@@ -391,6 +450,64 @@ test("Windows command throw is rolled back instead of escaping", async () => {
   assert.equal(r.ok, false);
   assert.match(r.error, /task timeout/);
   assert.equal(fs.existsSync(path.join(dataDir, "start-constellation.cmd")), false);
+});
+
+test("Windows launcher and XML writes are atomic members of the install transaction", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const failedName of ["start-constellation.cmd", "constellation-task.xml"]) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-write-tx-"));
+    const launcher = path.join(dataDir, "start-constellation.cmd");
+    const xml = path.join(dataDir, "constellation-task.xml");
+    const oldLauncher = Buffer.from([0xff, 0x00, 0x41]);
+    const oldXml = Buffer.from([0xfe, 0x42, 0x00]);
+    fs.writeFileSync(launcher, oldLauncher);
+    fs.writeFileSync(xml, oldXml);
+    const io = Object.create(fs);
+    let injected = false;
+    io.renameSync = (from, to) => {
+      if (!injected && path.basename(to) === failedName) {
+        injected = true;
+        throw new Error(`${failedName} replace failed`);
+      }
+      return fs.renameSync(from, to);
+    };
+    const fake = windowsRun({ taskXml: "<Task>old task</Task>", firewallExists: true });
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
+      { run: fake.run, user: "HOME\\x", fs: io });
+    assert.equal(result.ok, false);
+    assert.match(result.error, new RegExp(`${failedName} replace failed`));
+    assert.deepEqual(fs.readFileSync(launcher), oldLauncher);
+    assert.deepEqual(fs.readFileSync(xml), oldXml);
+    assert.deepEqual(fs.readdirSync(dataDir).sort(), ["constellation-task.xml", "start-constellation.cmd"]);
+  }
+});
+
+test("Windows second file write failure removes new files and reports cleanup failures without stopping cleanup", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const failCleanup of [false, true]) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-write-tx-"));
+    const io = Object.create(fs);
+    let xmlFailed = false;
+    io.renameSync = (from, to) => {
+      if (!xmlFailed && path.basename(to) === "constellation-task.xml") {
+        xmlFailed = true;
+        throw new Error("XML replace failed");
+      }
+      return fs.renameSync(from, to);
+    };
+    io.unlinkSync = (file) => {
+      if (failCleanup && path.basename(file) === "start-constellation.cmd") throw new Error("launcher cleanup failed");
+      return fs.unlinkSync(file);
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
+      { run: windowsRun().run, user: "HOME\\x", fs: io });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /XML replace failed/);
+    if (failCleanup) assert.match(result.error, /launcher cleanup failed/);
+    else assert.deepEqual(fs.readdirSync(dataDir), [], "failed transaction leaves no files or temp residue");
+    assert.equal(fs.existsSync(path.join(dataDir, "constellation-task.xml")), false,
+      "XML cleanup still runs when launcher cleanup fails");
+  }
 });
 
 test("Windows firewall failure removes resources created by this attempt", async () => {

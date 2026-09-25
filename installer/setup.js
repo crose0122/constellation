@@ -250,36 +250,112 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
 // answers without credentials (that is the picture-frame contract).  Require
 // its exact status, media type, and title marker: another service or proxy can
 // occupy the port and return a perfectly healthy 404.
-function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000) {
-  const started = Date.now();
+function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000, runtime = {}) {
+  const http = runtime.http || require("http");
+  const deadline = Date.now() + Math.max(0, timeoutMs);
   return new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    const tryOnce = () => {
-      const req = require("http").get(
-        { host, port: httpPort, path: "/wall", timeout: 2500 },
-        (res) => {
-          let body = "";
-          res.setEncoding("utf8");
-          res.on("data", (chunk) => {
-            if (body.length < 65536) body += chunk;
-            if (body.length >= 65536) res.destroy();
-          });
-          res.on("end", () => {
-            const type = String(res.headers["content-type"] || "").toLowerCase();
-            const ready = res.statusCode === 200 && type.startsWith("text/html") &&
-              body.includes("<title>Constellation — the wall</title>");
-            if (ready) return finish(true);
-            if (Date.now() - started >= timeoutMs) return finish(false);
-            setTimeout(tryOnce, Math.min(1000, timeoutMs));
-          });
-        });
-      req.on("error", () => {
-        if (Date.now() - started >= timeoutMs) return finish(false);
-        setTimeout(tryOnce, Math.min(1000, timeoutMs));
-      });
-      req.on("timeout", () => { req.destroy(); }); // fires the error handler
+    let settled = false;
+    let retryTimer = null;
+    let cancelAttempt = null;
+
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      clearTimeout(retryTimer);
+      if (cancelAttempt) cancelAttempt();
+      cancelAttempt = null;
+      resolve(ready);
     };
+    const retry = () => {
+      if (settled) return;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return finish(false);
+      retryTimer = setTimeout(tryOnce, Math.min(1000, remaining));
+    };
+    const tryOnce = () => {
+      if (settled) return;
+      if (Date.now() >= deadline) return finish(false);
+      let request = null;
+      let response = null;
+      let attemptFinished = false;
+      let ended = false;
+      let body = "";
+      let bytes = 0;
+
+      const destroyAfterRemoving = (emitter, listeners) => {
+        if (!emitter) return;
+        for (const [event, listener] of listeners) emitter.removeListener(event, listener);
+        if (emitter.destroyed) return;
+        const swallowError = () => {};
+        const removeDestroyListeners = () => {
+          emitter.removeListener("error", swallowError);
+          emitter.removeListener("close", removeDestroyListeners);
+        };
+        emitter.once("error", swallowError);
+        emitter.once("close", removeDestroyListeners);
+        emitter.destroy();
+      };
+      const cleanup = () => {
+        destroyAfterRemoving(response, [
+          ["data", onData], ["end", onEnd], ["aborted", failAttempt],
+          ["error", failAttempt], ["close", onResponseClose],
+        ]);
+        destroyAfterRemoving(request, [
+          ["response", onResponse], ["error", failAttempt], ["close", onRequestClose],
+        ]);
+        response = null;
+        request = null;
+        if (cancelAttempt === cancel) cancelAttempt = null;
+      };
+      const cancel = () => {
+        if (attemptFinished) return;
+        attemptFinished = true;
+        cleanup();
+      };
+      const failAttempt = () => {
+        if (attemptFinished || settled) return;
+        attemptFinished = true;
+        cleanup();
+        retry();
+      };
+      const onData = (chunk) => {
+        bytes += Buffer.byteLength(chunk, "utf8");
+        if (bytes > 65536) return failAttempt();
+        body += chunk;
+      };
+      const onEnd = () => {
+        if (attemptFinished || settled) return;
+        ended = true;
+        attemptFinished = true;
+        const type = String(response.headers["content-type"] || "").toLowerCase();
+        const ready = response.statusCode === 200 && type.startsWith("text/html") &&
+          body.includes("<title>Constellation — the wall</title>");
+        cleanup();
+        if (ready) finish(true); else retry();
+      };
+      const onResponseClose = () => { if (!ended) failAttempt(); };
+      const onRequestClose = () => { if (!response) failAttempt(); };
+      const onResponse = (res) => {
+        if (attemptFinished || settled) {
+          if (!res.destroyed) res.destroy();
+          return;
+        }
+        response = res;
+        res.setEncoding("utf8");
+        res.on("data", onData);
+        res.on("end", onEnd);
+        res.on("aborted", failAttempt);
+        res.on("error", failAttempt);
+        res.on("close", onResponseClose);
+      };
+
+      cancelAttempt = cancel;
+      request = http.get({ host, port: httpPort, path: "/wall", agent: false }, onResponse);
+      request.on("error", failAttempt);
+      request.on("close", onRequestClose);
+    };
+    const deadlineTimer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
     tryOnce();
   });
 }

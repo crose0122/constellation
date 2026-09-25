@@ -56,6 +56,7 @@ test("serverUp: requires the exact Constellation wall response, not merely an HT
   finally { await new Promise((r) => good.close(r)); }
 
   for (const response of [
+    { status: 302, type: "text/html", body, location: "/wall" },
     { status: 404, type: "text/html", body },
     { status: 200, type: "text/html", body: "unrelated web server" },
     { status: 200, type: "application/json", body },
@@ -63,6 +64,7 @@ test("serverUp: requires the exact Constellation wall response, not merely an HT
     const other = http.createServer((_req, res) => {
       res.statusCode = response.status;
       res.setHeader("content-type", response.type);
+      if (response.location) res.setHeader("location", response.location);
       res.end(response.body);
     });
     await new Promise((r) => other.listen(0, "127.0.0.1", r));
@@ -77,6 +79,97 @@ test("serverUp: requires the exact Constellation wall response, not merely an HT
     srv.listen(0, "127.0.0.1", () => { const p = srv.address().port; srv.close(() => r(p)); });
   });
   assert.equal(await s.serverUp("127.0.0.1", dead, 50), false);
+});
+
+test("serverUp: one deadline bounds connect, headers, and the complete response body", async () => {
+  const http = require("http");
+  const cases = [
+    (_req, _res) => {},
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.write("<title>Constellation — the wall</title>");
+      const drip = setInterval(() => res.write("."), 10);
+      res.on("close", () => clearInterval(drip));
+    },
+  ];
+  for (const handler of cases) {
+    const server = http.createServer(handler);
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const started = Date.now();
+    try {
+      assert.equal(await s.serverUp("127.0.0.1", server.address().port, 60), false);
+      assert.ok(Date.now() - started < 500, "the caller's deadline must replace the request's fixed timeout");
+    } finally {
+      if (server.closeAllConnections) server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
+test("serverUp: rejects truncated, errored, and oversized bodies and closes their sockets", async () => {
+  const http = require("http");
+  const handlers = [
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html", "content-length": "999" });
+      res.write("<title>Constellation — the wall</title>");
+      res.socket.destroy();
+    },
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("x".repeat(65537) + "<title>Constellation — the wall</title>");
+    },
+  ];
+  for (const handler of handlers) {
+    const sockets = new Set();
+    const server = http.createServer(handler);
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      assert.equal(await s.serverUp("127.0.0.1", server.address().port, 80), false);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(sockets.size, 0, "failed attempts must not leave a response socket open");
+    } finally {
+      if (server.closeAllConnections) server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
+test("serverUp: settles once and removes request and response listeners", async () => {
+  const { EventEmitter } = require("events");
+  const request = new EventEmitter();
+  request.destroyed = false;
+  request.destroy = () => { request.destroyed = true; queueMicrotask(() => request.emit("close")); };
+  let response;
+  let calls = 0;
+  const http = {
+    get(_options, callback) {
+      calls += 1;
+      queueMicrotask(() => {
+        response = new EventEmitter();
+        response.statusCode = 200;
+        response.headers = { "content-type": "text/html" };
+        response.destroyed = false;
+        response.setEncoding = () => {};
+        response.destroy = () => { response.destroyed = true; queueMicrotask(() => response.emit("close")); };
+        callback(response);
+        response.emit("data", "<title>Constellation — the wall</title>");
+        response.emit("end");
+        response.emit("aborted");
+      });
+      return request;
+    },
+  };
+  assert.equal(await s.serverUp("ignored", 1, 100, { http }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(request.destroyed, true);
+  assert.equal(response.destroyed, true);
+  assert.equal(request.eventNames().length, 0);
+  assert.equal(response.eventNames().length, 0);
 });
 
 test("finish copy promises overnight only for verified background capability", () => {

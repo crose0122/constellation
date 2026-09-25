@@ -98,16 +98,30 @@ function windowsLauncher({ exe, env, httpPort = 8484, tlsPort = 8485 }) {
   return lines.join("\r\n") + "\r\n";
 }
 
-function fileSnapshot(file) {
-  return fs.existsSync(file) ? fs.readFileSync(file) : null;
+function fileSnapshot(file, io = fs) {
+  return io.existsSync(file) ? io.readFileSync(file) : null;
 }
 
-function restoreFile(file, snapshot, errors, label) {
+let tempSequence = 0;
+function atomicWriteFile(file, contents, io = fs) {
+  const temp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${++tempSequence}`);
+  try {
+    io.writeFileSync(temp, contents, { flag: "wx" });
+    io.renameSync(temp, file);
+  } catch (e) {
+    let cleanup = null;
+    try { if (io.existsSync(temp)) io.unlinkSync(temp); }
+    catch (cleanupError) { cleanup = String((cleanupError && cleanupError.message) || cleanupError); }
+    throw new Error(String((e && e.message) || e) + (cleanup ? `; temp cleanup: ${cleanup}` : ""));
+  }
+}
+
+function restoreFile(file, snapshot, errors, label, io = fs) {
   try {
     if (snapshot == null) {
-      if (fs.existsSync(file)) fs.unlinkSync(file);
+      if (io.existsSync(file)) io.unlinkSync(file);
     } else {
-      fs.writeFileSync(file, snapshot);
+      atomicWriteFile(file, snapshot, io);
     }
   } catch (e) { errors.push(`${label}: ${String((e && e.message) || e)}`); }
 }
@@ -127,8 +141,8 @@ async function installLinux({ exe, envFile }, runtime = {}) {
   const dir = path.join(home, ".config", "systemd", "user");
   fs.mkdirSync(dir, { recursive: true });
   const unitPath = path.join(dir, UNIT);
-  const existing = fs.existsSync(unitPath) ? fs.readFileSync(unitPath, "utf8") : null;
-  if (!mayWriteUnit(existing)) {
+  const existing = fileSnapshot(unitPath);
+  if (!mayWriteUnit(existing == null ? null : existing.toString("utf8"))) {
     return { ok: false, error: `a Constellation service set up by hand already exists (${unitPath}); leaving it alone` };
   }
   let priorEnabled = false;
@@ -137,6 +151,23 @@ async function installLinux({ exe, envFile }, runtime = {}) {
     priorEnabled = (await run("systemctl", ["--user", "is-enabled", UNIT])).ok;
     priorActive = (await run("systemctl", ["--user", "is-active", UNIT])).ok;
   }
+  const restoreInstalledUnit = async (stopCurrent) => {
+    const errors = [];
+    if (stopCurrent) {
+      const disabled = await run("systemctl", ["--user", "disable", "--now", UNIT]);
+      if (!disabled.ok) errors.push(`disable unit: ${disabled.err.trim() || "command failed"}`);
+    }
+    restoreFile(unitPath, existing, errors, "restore unit");
+    const reload = await run("systemctl", ["--user", "daemon-reload"]);
+    if (!reload.ok) errors.push(`daemon-reload: ${reload.err.trim() || "command failed"}`);
+    if (existing != null) {
+      const enabled = await run("systemctl", ["--user", priorEnabled ? "enable" : "disable", UNIT]);
+      if (!enabled.ok) errors.push(`restore ${priorEnabled ? "enabled" : "disabled"} unit: ${enabled.err.trim() || "command failed"}`);
+      const active = await run("systemctl", ["--user", priorActive ? "start" : "stop", UNIT]);
+      if (!active.ok) errors.push(`restore ${priorActive ? "active" : "inactive"} unit: ${active.err.trim() || "command failed"}`);
+    }
+    return rollbackResult(errors);
+  };
   fs.writeFileSync(unitPath, systemdUnit({ exe, envFile }));
   // Verify BEFORE enabling: systemd-analyze warns about an unknown key even
   // when it exits 0, and a warned unit can mean a protection that never runs
@@ -145,7 +176,7 @@ async function installLinux({ exe, envFile }, runtime = {}) {
   const verify = await run("systemd-analyze", ["verify", unitPath]);
   if (!verify.ok || verify.err.trim() !== "") {
     const errors = [];
-    restoreFile(unitPath, existing == null ? null : Buffer.from(existing), errors, "restore unit");
+    restoreFile(unitPath, existing, errors, "restore unit");
     return { ok: false, error: `systemd-analyze verify did not pass: ${verify.err.trim() || "exit nonzero"}` +
       (errors.length ? `; rollback failed: ${errors.join("; ")}` : "") };
   }
@@ -156,11 +187,15 @@ async function installLinux({ exe, envFile }, runtime = {}) {
   for (const [c, a] of steps) {
     const r = await run(c, a);
     if (!r.ok) {
-      const errors = [];
-      if (c === "systemctl" && a.includes("enable"))
-        await run("systemctl", ["--user", "disable", "--now", UNIT]);
-      restoreFile(unitPath, existing == null ? null : Buffer.from(existing), errors, "restore unit");
-      await run("systemctl", ["--user", "daemon-reload"]);
+      let errors = [];
+      if (c === "systemctl" && a.includes("enable")) {
+        const restored = await restoreInstalledUnit(true);
+        if (!restored.ok) errors = [restored.error];
+      } else {
+        restoreFile(unitPath, existing, errors, "restore unit");
+        const reload = await run("systemctl", ["--user", "daemon-reload"]);
+        if (!reload.ok) errors.push(`daemon-reload: ${reload.err.trim() || "command failed"}`);
+      }
       return { ok: false, error: `${c} ${a.join(" ")}: ${r.err.trim()}` +
         (errors.length ? `; rollback failed: ${errors.join("; ")}` : "") };
     }
@@ -168,37 +203,22 @@ async function installLinux({ exe, envFile }, runtime = {}) {
   // linger = keep running with nobody logged in (a server in a closet). Best
   // effort: it needs polkit on some distros; without it we still start at login.
   const linger = await run("loginctl", ["enable-linger", user]);
-  const rollback = async () => {
-    const errors = [];
-    const disabled = await run("systemctl", ["--user", "disable", "--now", UNIT]);
-    if (!disabled.ok) errors.push(`disable unit: ${disabled.err.trim()}`);
-    restoreFile(unitPath, existing == null ? null : Buffer.from(existing), errors, "restore unit");
-    const reload = await run("systemctl", ["--user", "daemon-reload"]);
-    if (!reload.ok) errors.push(`daemon-reload: ${reload.err.trim()}`);
-    if (existing != null && priorEnabled) {
-      const enabled = await run("systemctl", ["--user", "enable", UNIT]);
-      if (!enabled.ok) errors.push(`restore enabled unit: ${enabled.err.trim()}`);
-    }
-    if (existing != null && priorActive) {
-      const active = await run("systemctl", ["--user", "start", UNIT]);
-      if (!active.ok) errors.push(`restore active unit: ${active.err.trim()}`);
-    }
-    return rollbackResult(errors);
-  };
+  const rollback = async () => restoreInstalledUnit(true);
   return { ok: true, linger: linger.ok, unit: unitPath, started: true,
     startsOnLogin: true, startsOnBoot: linger.ok, rollback };
 }
 
 async function installWindows({ exe, env, dataDir }, runtime = {}) {
+  const io = runtime.fs || fs;
   const rawRun = runtime.run || sh;
   const runCommand = async (...args) => {
     try { return await rawRun(...args); }
     catch (e) { return { ok: false, out: "", err: String((e && e.message) || e) }; }
   };
   const launcher = path.join(dataDir, "start-constellation.cmd");
-  const previousLauncher = fileSnapshot(launcher);
+  const previousLauncher = fileSnapshot(launcher, io);
   const xmlPath = path.join(dataDir, "constellation-task.xml");
-  const previousXml = fileSnapshot(xmlPath);
+  const previousXml = fileSnapshot(xmlPath, io);
   const previousTask = await runCommand("schtasks.exe", ["/Query", "/TN", TASK, "/XML"]);
   const taskXml = previousTask.ok && previousTask.out.trim() ? previousTask.out : null;
   const previousFirewall = await runCommand("netsh", ["advfirewall", "firewall", "show", "rule", "name=Constellation"]);
@@ -219,27 +239,33 @@ async function installWindows({ exe, env, dataDir }, runtime = {}) {
       if (taskXml != null) {
         const restoreXml = path.join(dataDir, ".constellation-task-restore.xml");
         try {
-          fs.writeFileSync(restoreXml, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(taskXml, "utf16le")]));
+          atomicWriteFile(restoreXml, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(taskXml, "utf16le")]), io);
           const r = await runCommand("schtasks.exe", ["/Create", "/TN", TASK, "/XML", restoreXml, "/F"]);
           if (!r.ok) errors.push(`task restore: ${r.err.trim()}`);
         } catch (e) { errors.push(`task restore: ${String((e && e.message) || e)}`); }
-        finally { try { if (fs.existsSync(restoreXml)) fs.unlinkSync(restoreXml); } catch (e) {
+        finally { try { if (io.existsSync(restoreXml)) io.unlinkSync(restoreXml); } catch (e) {
           errors.push(`task restore file cleanup: ${String((e && e.message) || e)}`); } }
       } else {
         const r = await runCommand("schtasks.exe", ["/Delete", "/TN", TASK, "/F"]);
         if (!r.ok) errors.push(`task cleanup: ${r.err.trim()}`);
       }
     }
-    restoreFile(launcher, previousLauncher, errors, "restore launcher");
-    restoreFile(xmlPath, previousXml, errors, "restore task XML");
+    restoreFile(launcher, previousLauncher, errors, "restore launcher", io);
+    restoreFile(xmlPath, previousXml, errors, "restore task XML", io);
     return rollbackResult(errors);
   };
 
-  fs.writeFileSync(launcher, windowsLauncher({ exe, env }));
   const user = runtime.user || `${process.env.USERDOMAIN || os.hostname()}\\${os.userInfo().username}`;
   // UTF-16LE with BOM, as schtasks expects for the encoding the XML declares
-  fs.writeFileSync(xmlPath, Buffer.concat([Buffer.from([0xff, 0xfe]),
-    Buffer.from(windowsTaskXml({ launcher, user }), "utf16le")]));
+  try {
+    atomicWriteFile(launcher, windowsLauncher({ exe, env }), io);
+    atomicWriteFile(xmlPath, Buffer.concat([Buffer.from([0xff, 0xfe]),
+      Buffer.from(windowsTaskXml({ launcher, user }), "utf16le")]), io);
+  } catch (e) {
+    const rb = await rollback();
+    return { ok: false, error: `startup file write failed: ${String((e && e.message) || e)}` +
+      (!rb.ok ? `; rollback failed: ${rb.error}` : "") };
+  }
   const create = await runCommand("schtasks.exe", ["/Create", "/TN", TASK, "/XML", xmlPath, "/F"]);
   taskChanged = create.ok;
   if (!create.ok) {
