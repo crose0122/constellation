@@ -60,6 +60,7 @@ test("serverUp: requires the exact Constellation wall response, not merely an HT
     { status: 404, type: "text/html", body },
     { status: 200, type: "text/html", body: "unrelated web server" },
     { status: 200, type: "application/json", body },
+    { status: 200, type: "text/html-not-really", body },
   ]) {
     const other = http.createServer((_req, res) => {
       res.statusCode = response.status;
@@ -79,6 +80,28 @@ test("serverUp: requires the exact Constellation wall response, not merely an HT
     srv.listen(0, "127.0.0.1", () => { const p = srv.address().port; srv.close(() => r(p)); });
   });
   assert.equal(await s.serverUp("127.0.0.1", dead, 50), false);
+});
+
+test("serverUp: parses Content-Type as one exact text/html media type", () => {
+  for (const value of [
+    "text/html",
+    "TEXT/HTML",
+    " \ttext/html\t ",
+    "text/html; charset=utf-8",
+    "TEXT/HTML ; charset=\"utf-8\"; boundary=safe",
+  ]) assert.equal(s.isHtmlMediaType(value), true, value);
+
+  for (const value of [
+    "text/html-not-really",
+    "text/html, application/json",
+    "text/html; charset",
+    "text/html; =utf-8",
+    "text/html; charset=\"unterminated",
+    "text /html",
+    ["text/html", "application/json"],
+    "application/xhtml+xml",
+    "",
+  ]) assert.equal(s.isHtmlMediaType(value), false, String(value));
 });
 
 test("serverUp: one deadline bounds connect, headers, and the complete response body", async () => {

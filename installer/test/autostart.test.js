@@ -142,7 +142,11 @@ function fakeBinDir(t, { verifyStderr = "", verifyFail = false } = {}) {
   script("systemd-analyze", verifyFail
     ? `echo ${JSON.stringify(verifyStderr)} >&2; exit 1`
     : `[ -n "${verifyStderr}" ] && echo ${JSON.stringify(verifyStderr)} >&2; exit 0`);
-  script("systemctl", "exit 0");
+  script("systemctl", `case "$2" in
+  is-enabled) echo "not-found"; exit 1 ;;
+  is-active) echo "inactive"; exit 3 ;;
+esac
+exit 0`);
   script("loginctl", "exit 0");
   return { dir, log };
 }
@@ -187,7 +191,7 @@ test("installLinux fails the install when systemd-analyze verify reports a probl
       assert.match(r.error, /verify|Unknown key/i);
       const calls = fs.readFileSync(log, "utf8");
       assert.doesNotMatch(calls, /daemon-reload/, "never reload a unit that failed verification");
-      assert.doesNotMatch(calls, /enable/, "never enable a unit that failed verification");
+      assert.doesNotMatch(calls, /(?:^|\n)--user enable --now(?: |\n)/, "never enable a unit that failed verification");
     });
   } finally { process.env.HOME = savedHome; }
 });
@@ -200,12 +204,13 @@ test("installWindows fails when the scheduled task cannot be created", async () 
   const st = path.join(bindir, "schtasks.exe");
   fs.writeFileSync(st, `#!/bin/sh
 case "$1" in
+  /Query) echo "ERROR: The system cannot find the file specified." >&2; exit 1 ;;
   /Create) echo "ERROR: access denied" >&2; exit 1 ;;
 esac
 exit 0
 `);
   fs.chmodSync(st, 0o755);
-  fs.writeFileSync(path.join(bindir, "netsh"), "#!/bin/sh\nexit 0\n");
+  fs.writeFileSync(path.join(bindir, "netsh"), "#!/bin/sh\necho 'No rules match the specified criteria.' >&2; exit 1\n");
   fs.chmodSync(path.join(bindir, "netsh"), 0o755);
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath}`;
@@ -222,11 +227,12 @@ test("installWindows surfaces a failed schtasks /Run instead of claiming success
   const { dir: bindir } = fakeBinDir(null);
   const st = path.join(bindir, "schtasks.exe");
   fs.writeFileSync(st, `#!/bin/sh
+if [ "$1" = "/Query" ]; then echo "ERROR: The system cannot find the file specified." >&2; exit 1; fi
 if [ "$1" = "/Run" ]; then echo "ERROR: The task is not ready to run" >&2; exit 1; fi
 exit 0
 `);
   fs.chmodSync(st, 0o755);
-  fs.writeFileSync(path.join(bindir, "netsh"), "#!/bin/sh\nexit 0\n");
+  fs.writeFileSync(path.join(bindir, "netsh"), "#!/bin/sh\necho 'No rules match the specified criteria.' >&2; exit 1\n");
   fs.chmodSync(path.join(bindir, "netsh"), 0o755);
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath}`;
@@ -242,10 +248,10 @@ test("installWindows surfaces a failed firewall rule instead of claiming success
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-"));
   const { dir: bindir } = fakeBinDir(null);
   const st = path.join(bindir, "schtasks.exe");
-  fs.writeFileSync(st, "#!/bin/sh\nexit 0\n");
+  fs.writeFileSync(st, "#!/bin/sh\nif [ \"$1\" = \"/Query\" ]; then echo 'ERROR: The system cannot find the file specified.' >&2; exit 1; fi\nexit 0\n");
   fs.chmodSync(st, 0o755);
   const ns = path.join(bindir, "netsh");
-  fs.writeFileSync(ns, "#!/bin/sh\necho 'The requested operation requires elevation' >&2; exit 1\n");
+  fs.writeFileSync(ns, "#!/bin/sh\nif [ \"$3\" = \"show\" ]; then echo 'No rules match the specified criteria.' >&2; exit 1; fi\necho 'The requested operation requires elevation' >&2; exit 1\n");
   fs.chmodSync(ns, 0o755);
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath}`;
@@ -261,10 +267,10 @@ test("installWindows happy path: create, then run, then firewall", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-"));
   const { dir: bindir, log } = fakeBinDir(null);
   const stc = path.join(bindir, "schtasks.exe");
-  fs.writeFileSync(stc, `#!/bin/sh\necho "$1 $2 $3" >> ${JSON.stringify(log)}\nexit 0\n`);
+  fs.writeFileSync(stc, `#!/bin/sh\necho "$1 $2 $3" >> ${JSON.stringify(log)}\nif [ "$1" = "/Query" ]; then echo "ERROR: The system cannot find the file specified." >&2; exit 1; fi\nexit 0\n`);
   fs.chmodSync(stc, 0o755);
   const nsc = path.join(bindir, "netsh");
-  fs.writeFileSync(nsc, `#!/bin/sh\necho "$1 $2 $3" >> ${JSON.stringify(log)}\nexit 0\n`);
+  fs.writeFileSync(nsc, `#!/bin/sh\necho "$1 $2 $3" >> ${JSON.stringify(log)}\nif [ "$3" = "show" ]; then echo "No rules match the specified criteria." >&2; exit 1; fi\nexit 0\n`);
   fs.chmodSync(nsc, 0o755);
   const savedPath = process.env.PATH;
   process.env.PATH = `${bindir}:${savedPath}`;
@@ -287,7 +293,12 @@ test("installWindows happy path: create, then run, then firewall", async () => {
 test("Linux success reports started; failed linger earns login, never boot", async () => {
   const fs = require("fs"), os = require("os"), path = require("path");
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-tx-"));
-  const run = async (cmd) => ({ ok: cmd !== "loginctl", out: "", err: cmd === "loginctl" ? "denied" : "" });
+  const run = async (cmd, args) => {
+    if (cmd === "loginctl") return { ok: false, out: "", err: "denied" };
+    if (args.includes("is-enabled")) return { ok: false, out: "not-found\n", err: "" };
+    if (args.includes("is-active")) return { ok: false, out: "inactive\n", err: "" };
+    return { ok: true, out: "", err: "" };
+  };
   const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
   assert.equal(r.ok, true);
   assert.equal(r.started, true);
@@ -303,9 +314,12 @@ test("Linux verification failure restores a prior managed unit and removes a new
     fs.mkdirSync(dir, { recursive: true });
     const unit = path.join(dir, a.UNIT);
     if (prior != null) fs.writeFileSync(unit, prior);
-    const run = async (cmd) => cmd === "systemd-analyze"
-      ? { ok: false, out: "", err: "invalid unit" }
-      : { ok: true, out: "", err: "" };
+    const run = async (cmd, args) => {
+      if (cmd === "systemd-analyze") return { ok: false, out: "", err: "invalid unit" };
+      if (args.includes("is-enabled")) return { ok: false, out: "disabled\n", err: "" };
+      if (args.includes("is-active")) return { ok: false, out: "inactive\n", err: "" };
+      return { ok: true, out: "", err: "" };
+    };
     const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
     assert.equal(r.ok, false);
     assert.equal(fs.existsSync(unit), prior != null);
@@ -387,7 +401,8 @@ test("Linux readiness rollback attempts enabled and active restoration after ear
   const calls = [];
   const run = async (cmd, args) => {
     calls.push([cmd, ...args]);
-    if (args.includes("is-enabled") || args.includes("is-active")) return { ok: true, out: "yes", err: "" };
+    if (args.includes("is-enabled")) return { ok: true, out: "enabled\n", err: "" };
+    if (args.includes("is-active")) return { ok: true, out: "active\n", err: "" };
     if (args.includes("disable") && args.includes("--now")) return { ok: false, out: "", err: "disable failed" };
     if (args.includes("daemon-reload") && calls.filter((c) => c.includes("daemon-reload")).length > 1)
       return { ok: false, out: "", err: "reload failed" };
@@ -405,20 +420,167 @@ test("Linux readiness rollback attempts enabled and active restoration after ear
   assert.ok(calls.some((c) => c.includes("start")));
 });
 
+test("Linux aborts before creating a unit when discovery transport fails", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-discovery-"));
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    return { ok: false, code: 1, out: "", err: "Failed to connect to bus: No medium found" };
+  };
+  const result = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /is-enabled.*No medium found/i);
+  assert.equal(fs.existsSync(path.join(home, ".config", "systemd", "user", a.UNIT)), false);
+  assert.deepEqual(calls, [["systemctl", "--user", "is-enabled", a.UNIT]]);
+});
+
+test("Linux aborts before writing when prior systemd state is unknown", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  for (const failedQuery of ["is-enabled", "is-active"]) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-discovery-"));
+    const dir = path.join(home, ".config", "systemd", "user");
+    fs.mkdirSync(dir, { recursive: true });
+    const unit = path.join(dir, a.UNIT);
+    const prior = a.MARKER + "\n[Service]\nExecStart=/old\n";
+    fs.writeFileSync(unit, prior);
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (args.includes(failedQuery)) return { ok: false, code: 1, out: "", err: "Failed to connect to bus: Permission denied" };
+      if (args.includes("is-enabled")) return { ok: false, code: 1, out: "disabled\n", err: "" };
+      if (args.includes("is-active")) return { ok: false, code: 3, out: "inactive\n", err: "" };
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+    assert.equal(result.ok, false);
+    assert.match(result.error, new RegExp(`${failedQuery}.*Permission denied`, "i"));
+    assert.equal(fs.readFileSync(unit, "utf8"), prior, "discovery failure leaves the unit byte-for-byte untouched");
+    assert.equal(calls.some((call) => call[0] === "systemd-analyze" ||
+      call.includes("daemon-reload") || call.includes("enable") || call.includes("disable") ||
+      call.includes("start") || call.includes("stop")), false, "unknown state permits no mutation");
+  }
+});
+
+test("Linux rollback of a fresh install restores absence without stopping a nonexistent unit", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-discovery-"));
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("is-enabled")) return { ok: false, code: 4, out: "not-found\n", err: "" };
+    if (args.includes("is-active")) return { ok: false, code: 4, out: "inactive\n", err: "" };
+    if (args.includes("stop")) return { ok: false, code: 5, out: "", err: "Unit constellation.service not loaded." };
+    return { ok: true, code: 0, out: "", err: "" };
+  };
+  const installed = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(installed.ok, true, installed.error || "");
+  assert.equal((await installed.rollback()).ok, true);
+  assert.equal(fs.existsSync(path.join(home, ".config", "systemd", "user", a.UNIT)), false);
+  assert.equal(calls.some((call) => call.includes("stop")), false);
+});
+
+test("Linux recognizes explicit disabled and inactive states and restores them exactly", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-discovery-"));
+  const dir = path.join(home, ".config", "systemd", "user");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, a.UNIT), a.MARKER + "\n[Service]\nExecStart=/old\n");
+  const calls = [];
+  const run = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("is-enabled")) return { ok: false, code: 1, out: "disabled\n", err: "" };
+    if (args.includes("is-active")) return { ok: false, code: 3, out: "inactive\n", err: "" };
+    return { ok: true, code: 0, out: "", err: "" };
+  };
+  const installed = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env" }, { run, home, user: "family" });
+  assert.equal(installed.ok, true, installed.error || "");
+  assert.equal((await installed.rollback()).ok, true);
+  assert.ok(calls.some((call) => call.includes("disable") && !call.includes("--now")));
+  assert.ok(calls.some((call) => call.includes("stop")));
+});
+
 function windowsRun({ taskXml = null, firewallExists = false, cleanupFails = [] } = {}) {
   const calls = [];
   const run = async (cmd, args) => {
     calls.push([cmd, ...args]);
     const joined = [cmd, ...args].join(" ");
     if (cmd === "schtasks.exe" && args[0] === "/Query")
-      return taskXml == null ? { ok: false, out: "", err: "not found" } : { ok: true, out: taskXml, err: "" };
+      return taskXml == null
+        ? { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified." }
+        : { ok: true, code: 0, out: taskXml, err: "" };
     if (cmd === "netsh" && args.includes("show"))
-      return firewallExists ? { ok: true, out: "Rule Name: Constellation", err: "" } : { ok: false, out: "", err: "No rules match" };
+      return firewallExists
+        ? { ok: true, code: 0, out: "Rule Name: Constellation", err: "" }
+        : { ok: false, code: 1, out: "", err: "No rules match the specified criteria." };
     if (cleanupFails.some((x) => joined.includes(x))) return { ok: false, out: "", err: `${joined} cleanup failed` };
     return { ok: true, out: "", err: "" };
   };
   return { run, calls };
 }
+
+test("Windows aborts before writes when task or firewall discovery is unknown", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const unknowns = [
+    { label: "task access denied", task: { ok: false, code: 5, out: "", err: "ERROR: Access is denied." },
+      firewall: { ok: false, code: 1, out: "", err: "No rules match the specified criteria." } },
+    { label: "localized task absence", task: { ok: false, code: 1, out: "", err: "ERREUR : Le fichier spécifié est introuvable." },
+      firewall: { ok: false, code: 1, out: "", err: "No rules match the specified criteria." } },
+    { label: "malformed task XML", task: { ok: true, code: 0, out: "task exists but XML is unavailable", err: "" },
+      firewall: { ok: false, code: 1, out: "", err: "No rules match the specified criteria." } },
+    { label: "firewall access denied", task: { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified." },
+      firewall: { ok: false, code: 5, out: "", err: "Access is denied." } },
+    { label: "localized firewall absence", task: { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified." },
+      firewall: { ok: false, code: 1, out: "", err: "Aucune règle ne correspond aux critères spécifiés." } },
+    { label: "ambiguous firewall output", task: { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified." },
+      firewall: { ok: true, code: 0, out: "Ok.", err: "" } },
+  ];
+  for (const item of unknowns) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-discovery-"));
+    const launcher = path.join(dataDir, "start-constellation.cmd");
+    const xml = path.join(dataDir, "constellation-task.xml");
+    fs.writeFileSync(launcher, "old launcher");
+    fs.writeFileSync(xml, "old xml");
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe") return item.task;
+      if (cmd === "netsh" && args.includes("show")) return item.firewall;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
+      { run, user: "HOME\\x" });
+    assert.equal(result.ok, false, item.label);
+    assert.match(result.error, /snapshot|discover|query|parse|prior/i, item.label);
+    assert.equal(fs.readFileSync(launcher, "utf8"), "old launcher", item.label);
+    assert.equal(fs.readFileSync(xml, "utf8"), "old xml", item.label);
+    assert.equal(calls.some((call) => call.includes("/Create") || call.includes("/Delete") ||
+      call.includes("add") || call.includes("delete")), false, `${item.label}: no mutation`);
+  }
+});
+
+test("Windows accepts only exact machine task XML and exact English absence outcomes", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const missingTask = { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified.\r\n" };
+  const missingFirewall = { ok: false, code: 1, out: "", err: "No rules match the specified criteria.\r\n" };
+  for (const snapshot of [
+    { task: missingTask, firewall: missingFirewall },
+    { task: { ok: true, code: 0, out: "<?xml version=\"1.0\"?><Task><Settings /></Task>\r\n", err: "" },
+      firewall: missingFirewall },
+    { task: missingTask,
+      firewall: { ok: true, code: 0, out: "No rules match the specified criteria.\r\n", err: "" } },
+  ]) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-discovery-"));
+    const run = async (cmd, args) => {
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return snapshot.task;
+      if (cmd === "netsh" && args.includes("show")) return snapshot.firewall;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
+      { run, user: "HOME\\x" });
+    assert.equal(result.ok, true, result.error || "");
+  }
+});
 
 test("Windows /Run failure restores preexisting task, launcher, and XML", async () => {
   const fs = require("fs"), os = require("os"), path = require("path");

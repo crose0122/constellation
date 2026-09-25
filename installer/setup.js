@@ -250,6 +250,14 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
 // answers without credentials (that is the picture-frame contract).  Require
 // its exact status, media type, and title marker: another service or proxy can
 // occupy the port and return a perfectly healthy 404.
+function isHtmlMediaType(value) {
+  if (typeof value !== "string") return false;
+  const token = "[!#$%&'*+\\-.^_`|~0-9A-Za-z]+";
+  const quoted = '"(?:[\\t !#-\\[\\]-~\\x80-\\xff]|\\\\[\\t -~\\x80-\\xff])*"';
+  const parameter = `;[\\t ]*${token}[\\t ]*=[\\t ]*(?:${token}|${quoted})[\\t ]*`;
+  return new RegExp(`^[\\t ]*text/html[\\t ]*(?:${parameter})*$`, "i").test(value);
+}
+
 function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000, runtime = {}) {
   const http = runtime.http || require("http");
   const deadline = Date.now() + Math.max(0, timeoutMs);
@@ -328,8 +336,8 @@ function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000, runtime
         if (attemptFinished || settled) return;
         ended = true;
         attemptFinished = true;
-        const type = String(response.headers["content-type"] || "").toLowerCase();
-        const ready = response.statusCode === 200 && type.startsWith("text/html") &&
+        const type = response.headers["content-type"];
+        const ready = response.statusCode === 200 && isHtmlMediaType(type) &&
           body.includes("<title>Constellation — the wall</title>");
         cleanup();
         if (ready) finish(true); else retry();
@@ -530,4 +538,5 @@ function startBackgroundSweep(backendDir, cfg) {
 
 module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
   writeConfig, configLines, prepare, launchStack, runFirstSweep, startBackgroundSweep, backendExe,
-  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable, serverUp };
+  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable,
+  isHtmlMediaType, serverUp };

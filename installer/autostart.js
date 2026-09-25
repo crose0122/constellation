@@ -21,7 +21,26 @@ const TASK = "Constellation";
 
 function sh(cmd, args, timeout = 20000) {
   return new Promise((resolve) => execFile(cmd, args, { timeout, windowsHide: true },
-    (err, out, errOut) => resolve({ ok: !err, out: String(out || ""), err: String(errOut || (err && err.message) || "") })));
+    (err, out, errOut) => {
+      const stderr = String(errOut || "");
+      const launchError = err && (typeof err.code !== "number" || err.killed || err.signal)
+        ? String(err.message || err) : "";
+      resolve({ ok: !err, code: err ? err.code : 0,
+        out: String(out || ""), err: stderr || launchError });
+    }));
+}
+
+function systemdState(result, query) {
+  const value = String(result.out || "").trim();
+  const expected = query === "is-enabled"
+    ? { enabled: true, disabled: false, "not-found": false }
+    : { active: true, inactive: false, "not-found": false };
+  if (Object.prototype.hasOwnProperty.call(expected, value)) {
+    const successMatches = expected[value] ? result.ok : !result.ok;
+    if (successMatches && !String(result.err || "").trim()) return { known: true, value: expected[value], state: value };
+  }
+  const detail = String(result.err || result.out || `exit ${result.code == null ? "unknown" : result.code}`).trim();
+  return { known: false, error: `${query} could not determine prior state: ${detail || "empty response"}` };
 }
 
 // systemd quoting: one argument per word, escape backslash/quote, wrap in "".
@@ -130,6 +149,28 @@ function rollbackResult(errors) {
   return errors.length ? { ok: false, error: errors.join("; ") } : { ok: true };
 }
 
+function scheduledTaskSnapshot(result) {
+  const out = String(result.out || "").trim();
+  const err = String(result.err || "").trim();
+  if (result.ok && !err && /^(?:<\?xml[^>]*>\s*)?<Task\b[^>]*>[\s\S]*<\/Task>$/.test(out))
+    return { known: true, xml: out };
+  if (!result.ok && !out && err === "ERROR: The system cannot find the file specified.")
+    return { known: true, xml: null };
+  return { known: false, error: `scheduled task snapshot query was ambiguous: ${err || out || "empty response"}` };
+}
+
+function firewallSnapshot(result) {
+  const out = String(result.out || "").trim();
+  const err = String(result.err || "").trim();
+  const message = [out, err].filter(Boolean).join("\n");
+  if ((out === "No rules match the specified criteria." && !err) ||
+      (err === "No rules match the specified criteria." && !out))
+    return { known: true, existed: false };
+  if (result.ok && !err && out.split(/\r?\n/).some((line) => /^Rule Name:\s+Constellation\s*$/.test(line)))
+    return { known: true, existed: true };
+  return { known: false, error: `firewall snapshot query was ambiguous: ${message || "empty response"}` };
+}
+
 async function installLinux({ exe, envFile }, runtime = {}) {
   const rawRun = runtime.run || sh;
   const run = async (...args) => {
@@ -139,18 +180,17 @@ async function installLinux({ exe, envFile }, runtime = {}) {
   const home = runtime.home || os.homedir();
   const user = runtime.user || os.userInfo().username;
   const dir = path.join(home, ".config", "systemd", "user");
-  fs.mkdirSync(dir, { recursive: true });
   const unitPath = path.join(dir, UNIT);
   const existing = fileSnapshot(unitPath);
   if (!mayWriteUnit(existing == null ? null : existing.toString("utf8"))) {
     return { ok: false, error: `a Constellation service set up by hand already exists (${unitPath}); leaving it alone` };
   }
-  let priorEnabled = false;
-  let priorActive = false;
-  if (existing != null) {
-    priorEnabled = (await run("systemctl", ["--user", "is-enabled", UNIT])).ok;
-    priorActive = (await run("systemctl", ["--user", "is-active", UNIT])).ok;
-  }
+  const enabled = systemdState(await run("systemctl", ["--user", "is-enabled", UNIT]), "is-enabled");
+  if (!enabled.known) return { ok: false, error: enabled.error };
+  const active = systemdState(await run("systemctl", ["--user", "is-active", UNIT]), "is-active");
+  if (!active.known) return { ok: false, error: active.error };
+  const priorEnabled = enabled.value;
+  const priorActive = active.value;
   const restoreInstalledUnit = async (stopCurrent) => {
     const errors = [];
     if (stopCurrent) {
@@ -160,14 +200,17 @@ async function installLinux({ exe, envFile }, runtime = {}) {
     restoreFile(unitPath, existing, errors, "restore unit");
     const reload = await run("systemctl", ["--user", "daemon-reload"]);
     if (!reload.ok) errors.push(`daemon-reload: ${reload.err.trim() || "command failed"}`);
-    if (existing != null) {
+    if (enabled.state !== "not-found") {
       const enabled = await run("systemctl", ["--user", priorEnabled ? "enable" : "disable", UNIT]);
       if (!enabled.ok) errors.push(`restore ${priorEnabled ? "enabled" : "disabled"} unit: ${enabled.err.trim() || "command failed"}`);
+    }
+    if (enabled.state !== "not-found" && active.state !== "not-found") {
       const active = await run("systemctl", ["--user", priorActive ? "start" : "stop", UNIT]);
       if (!active.ok) errors.push(`restore ${priorActive ? "active" : "inactive"} unit: ${active.err.trim() || "command failed"}`);
     }
     return rollbackResult(errors);
   };
+  fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(unitPath, systemdUnit({ exe, envFile }));
   // Verify BEFORE enabling: systemd-analyze warns about an unknown key even
   // when it exits 0, and a warned unit can mean a protection that never runs
@@ -219,10 +262,14 @@ async function installWindows({ exe, env, dataDir }, runtime = {}) {
   const previousLauncher = fileSnapshot(launcher, io);
   const xmlPath = path.join(dataDir, "constellation-task.xml");
   const previousXml = fileSnapshot(xmlPath, io);
-  const previousTask = await runCommand("schtasks.exe", ["/Query", "/TN", TASK, "/XML"]);
-  const taskXml = previousTask.ok && previousTask.out.trim() ? previousTask.out : null;
-  const previousFirewall = await runCommand("netsh", ["advfirewall", "firewall", "show", "rule", "name=Constellation"]);
-  const firewallExisted = previousFirewall.ok && /Constellation/i.test(previousFirewall.out);
+  const previousTask = scheduledTaskSnapshot(
+    await runCommand("schtasks.exe", ["/Query", "/TN", TASK, "/XML"]));
+  if (!previousTask.known) return { ok: false, error: previousTask.error };
+  const taskXml = previousTask.xml;
+  const previousFirewall = firewallSnapshot(
+    await runCommand("netsh", ["advfirewall", "firewall", "show", "rule", "name=Constellation"]));
+  if (!previousFirewall.known) return { ok: false, error: previousFirewall.error };
+  const firewallExisted = previousFirewall.existed;
   let taskChanged = false;
   let firewallAdded = false;
   let rolledBack = false;
