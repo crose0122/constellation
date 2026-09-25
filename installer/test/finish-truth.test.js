@@ -47,10 +47,11 @@ test("serverUp: true against a real local HTTP server, false when nothing listen
   try {
     assert.equal(await s.serverUp("127.0.0.1", port, 2000), true, "a listening server is up");
   } finally { srv.close(); }
-  // a port with nothing on it: pick an unused one by binding and releasing
+  // a port with nothing on it: bind, release, let the kernel settle, then probe
   const dead = await new Promise((r) => {
     const s2 = http.createServer();
     s2.listen(0, "127.0.0.1", () => { const p = s2.address().port; s2.close(() => r(p)); });
   });
+  await new Promise((r) => setTimeout(r, 150));
   assert.equal(await s.serverUp("127.0.0.1", dead, 1500), false, "nothing listening = not up");
 });

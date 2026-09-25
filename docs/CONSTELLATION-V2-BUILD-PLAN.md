@@ -260,3 +260,12 @@ Each checkpoint appends: date, SHA(s), test counts before/after, mutation result
 - Tests: engine 83 → **102**. 13 mutations; 3 initially survived (EXIF source, orientation) → EXIF-source test added (now caught); orientation transpose is belt-and-braces because pillow-heif already applies HEIF rotation on decode — documented, behaviour-neutral with this decoder.
 - E2E on the real bundled binary: mixed dump (8 HEIC w/ GPS, 6-frame burst, CR3, oversized .mov, 5 JPEG) → wall 14, parked 5 with frame 3 kept, RAW archived, oversized skipped with message, HEIC served as JPEG — **15/15**.
 - Not done in CP3: "storage math" UI already shipped in CP2; Live Photo *video* half continues to be skipped (existing behaviour).
+
+### Startup truthfulness repair (AMS task #130), 2026-09-25
+The installer could claim a startup it had not verified. Four lies, all closed:
+- `StartLimitIntervalSec=0` was emitted in `[Service]`, where systemd **ignores** it (confirmed: `systemd-analyze verify` prints "Unknown key … in section [Service]"). Now a `[Unit]` key, where it belongs, so the restart-forever promise is real.
+- Linux: the unit is now **verified with `systemd-analyze verify` before enable**; a silent verify is the only "yes" (verify exits 0 even while warning, so the gate reads stderr, not the exit code). A warned unit fails the install instead of shipping broken.
+- Windows: `schtasks /Create`, `/Run` and the `netsh` firewall rule were fire-and-forget — a task that exists but refuses to start reported success. All three results are surfaced; failure fails the install with the command's own error.
+- Wizard: the finish screen said "You're all set — starts by itself" unconditionally. Startup claims are now earned (`decide.finishClaims()` truth table + `setup.serverUp()` real HTTP probe): no verified start-on-boot → it says so plainly; nothing answering → a problem screen with a Try-again step, never a fake success.
+- Tests: installer 36 → **48** node tests. 5 mutations, each watched failing at commit time: key moved back to [Service], verify-gate disabled, schtasks /Run ignored, firewall ignored, `startsItself` ungated. Re-verified 2026-09-25: `serverUp` hardcoded true and `startsItself` ungated both fail finish-truth; full suite 48/48.
+- Live `systemd-analyze verify` (real binary, systemd 259): shipped unit silent; the old unit reproduces the warning.
