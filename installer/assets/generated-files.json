@@ -1,0 +1,5 @@
+[
+  { "path": "decide.js", "stage": "commit-time" },
+  { "path": "autostart.js", "stage": "commit-time" },
+  { "path": "../scripts/dist/memoryvault-brain", "stage": "pack-time" }
+]

@@ -2,15 +2,17 @@
   "name": "constellation-setup",
   "productName": "Constellation Setup",
   "version": "0.1.0",
-  "description": "Constellation installer \u2014 one evening from a spare PC to your family photos on the wall. No GPU needed, no terminal, nothing leaves your network.",
+  "description": "Constellation installer — one evening from a spare PC to your family photos on the wall. No GPU needed, no terminal, nothing leaves your network.",
   "main": "main.js",
   "author": "Constellation",
   "license": "SEE LICENSE IN ../README.md",
   "scripts": {
+    "pretest": "node ../scripts/gen-shipped-assets.js --check",
     "start": "electron .",
     "test": "node --test \"test/*.test.js\"",
-    "dist": "electron-builder --win nsis",
-    "dist:linux": "electron-builder --linux AppImage"
+    "gen:assets": "node ../scripts/gen-shipped-assets.js",
+    "dist": "npm run gen:assets && electron-builder --win nsis",
+    "dist:linux": "npm run gen:assets && electron-builder --linux AppImage"
   },
   "devDependencies": {
     "electron": "^33.0.0",
