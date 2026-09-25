@@ -59,7 +59,17 @@ test("every commit-time manifest entry exists in the tree", () => {
 
 test("manifest has no dead entries (every path is shipped by build config)", () => {
   const shipped = new Set(listedShippedPaths());
-  const dead = [...manifestPaths].filter((p) => !shipped.has(p) && p !== "../scripts/dist");
+  const covered = (rel) => {
+    // a shipped directory covers everything under it (e.g. models/ via
+    // extraResources), so walk up to the nearest shipped ancestor
+    for (;;) {
+      if (shipped.has(rel)) return true;
+      const i = rel.lastIndexOf("/");
+      if (i < 0) return false;
+      rel = rel.slice(0, i);
+    }
+  };
+  const dead = [...manifestPaths].filter((p) => !covered(p) && p !== "../scripts/dist");
   assert.deepEqual(dead, [],
     "manifest entries not shipped by build config (remove them or fix build.files): " +
     dead.join(", "));

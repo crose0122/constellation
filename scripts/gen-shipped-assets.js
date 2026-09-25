@@ -55,6 +55,13 @@ for (const m of missing) {
     } catch {
       cannotGenerate.push("../scripts/dist/memoryvault-brain (build-backend.sh failed)");
     }
+  } else if (m.path === "models/nsfw-screen.onnx") {
+    try {
+      execFileSync("bash", [path.resolve(installerDir, "fetch-models.sh")],
+                   { stdio: "inherit", timeout: 600000 });
+    } catch {
+      cannotGenerate.push("models/nsfw-screen.onnx (fetch-models.sh failed)");
+    }
   } else {
     cannotGenerate.push(`${m.path} (no generator wired for this path)`);
   }
