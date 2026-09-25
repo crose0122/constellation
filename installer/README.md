@@ -126,3 +126,21 @@ same as Ollama's.
 - **Ship the Android APK** — the TV app currently has to be built from source
   with a JDK and the Android SDK. A prebuilt, debug-signed `.apk` next to the
   desktop installer would make the TV step as easy as the rest.
+
+## Linux (Ubuntu 24.04 and newer)
+
+Install the `.deb`: `sudo apt install ./constellation-setup_<version>_amd64.deb`.
+
+Ubuntu 24.04+ blocks unprivileged user namespaces, which Electron's sandbox needs, so
+an unconfined Electron app aborts at launch ("The SUID sandbox helper binary was found,
+but is not configured correctly…"). The `.deb` installs `/etc/apparmor.d/constellation-setup`,
+which grants `userns` to `/opt/Constellation Setup/constellation-setup` only, and loads it
+during install; uninstalling removes it. Nothing system-wide is relaxed.
+
+The AppImage is still built, but it **will not start on stock Ubuntu 24.04+**: it runs
+from a random `/tmp/.mount_*` path that no AppArmor profile can name. Use it only on
+distributions without that restriction.
+
+Build: `npm run dist:linux` (produces both). Contract tests:
+`node --test test/linux-packaging.test.js`; to inspect a built package too, set
+`CONSTELLATION_DEB=dist/constellation-setup_<version>_amd64.deb`.
