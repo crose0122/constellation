@@ -3,6 +3,30 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const a = require("../autostart");
 
+// Realistic Windows discovery fixtures. schtasks /Query /XML prints the
+// registered definition; netsh prints one block per matching rule then "Ok.".
+const VALID_TASK_XML = a.windowsTaskXml({ launcher: "C:\\old\\start.cmd", user: "HOME\\old" }).trim();
+const NETSH_PRESENT = [
+  "",
+  "Rule Name:                            Constellation",
+  "----------------------------------------------------------------------",
+  "Enabled:                              Yes",
+  "Direction:                            In",
+  "Profiles:                             Private",
+  "Grouping:                             ",
+  "LocalIP:                              Any",
+  "RemoteIP:                             Any",
+  "Protocol:                             TCP",
+  "LocalPort:                            8484,8485",
+  "RemotePort:                           Any",
+  "Edge traversal:                       No",
+  "Action:                               Allow",
+  "Ok.",
+  "",
+].join("\r\n");
+const NETSH_ABSENT = { ok: false, code: 1, out: "No rules match the specified criteria.\r\n", err: "" };
+const TASK_ABSENT = { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified.\r\n" };
+
 test("systemd user unit: always restarts, no start limit, reads the config file", () => {
   const u = a.systemdUnit({ exe: "/opt/constellation/backend/memoryvault-brain", envFile: "/home/x/Constellation/.env" });
   assert.match(u, /^Restart=always$/m);
@@ -511,7 +535,7 @@ function windowsRun({ taskXml = null, firewallExists = false, cleanupFails = [] 
         : { ok: true, code: 0, out: taskXml, err: "" };
     if (cmd === "netsh" && args.includes("show"))
       return firewallExists
-        ? { ok: true, code: 0, out: "Rule Name: Constellation", err: "" }
+        ? { ok: true, code: 0, out: NETSH_PRESENT, err: "" }
         : { ok: false, code: 1, out: "", err: "No rules match the specified criteria." };
     if (cleanupFails.some((x) => joined.includes(x))) return { ok: false, out: "", err: `${joined} cleanup failed` };
     return { ok: true, out: "", err: "" };
@@ -559,14 +583,151 @@ test("Windows aborts before writes when task or firewall discovery is unknown", 
   }
 });
 
+// Review blocker: task XML must be parsed, not pattern-matched. Anything a
+// real XML parser rejects, or that is not a Task Scheduler <Task>, is an
+// unknown prior state; install must stop before writing a single byte.
+test("Windows rejects malformed or foreign task XML before any write or mutation", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const ns = 'xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"';
+  const invalid = {
+    "mismatched tag (review repro)": '<?xml version="1.0"?><Task><Broken></Task>',
+    "mismatched tag in namespace": `<?xml version="1.0" encoding="UTF-16"?><Task version="1.4" ${ns}><Broken></Task>`,
+    "unclosed child": `<Task ${ns}><Settings>`,
+    "trailing garbage after root": `<Task ${ns}><Settings/></Task>trailing`,
+    "second root element": `<Task ${ns}/><Task ${ns}/>`,
+    "undefined entity": `<Task ${ns}><Settings>&bogus;</Settings></Task>`,
+    "doctype with entity": `<!DOCTYPE Task [<!ENTITY x "y">]><Task ${ns}>&x;</Task>`,
+    "doctype without entity use": `<!DOCTYPE Task SYSTEM "http://example.invalid/t.dtd"><Task ${ns}><Settings/></Task>`,
+    "duplicate attribute": `<Task version="1.2" version="1.3" ${ns}/>`,
+    "no namespace": "<Task><Settings/></Task>",
+    "wrong namespace": '<Task xmlns="urn:not-task-scheduler"><Settings/></Task>',
+    "wrong root": `<Tasks ${ns}><Settings/></Tasks>`,
+    "prefixed wrong local name": '<t:Job xmlns:t="http://schemas.microsoft.com/windows/2004/02/mit/task"/>',
+    "empty output": "",
+  };
+  for (const [label, xml] of Object.entries(invalid)) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-xml-"));
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return { ok: true, code: 0, out: xml, err: "" };
+      if (cmd === "netsh" && args.includes("show")) return NETSH_ABSENT;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
+      { run, user: "HOME\\x" });
+    assert.equal(result.ok, false, label);
+    assert.match(result.error, /scheduled task snapshot/i, label);
+    assert.deepEqual(fs.readdirSync(dataDir), [], `${label}: no file writes`);
+    assert.equal(calls.some((call) => call.includes("/Create") || call.includes("/Delete") ||
+      call.includes("/Run") || call.includes("add") || call.includes("delete")), false, `${label}: no mutation`);
+  }
+});
+
+test("Windows task snapshot parser accepts real Task Scheduler XML, prefixed or default namespace", () => {
+  const snap = a.scheduledTaskSnapshot({ ok: true, code: 0, out: "\ufeff" + VALID_TASK_XML + "\r\n", err: "" });
+  assert.equal(snap.known, true, snap.error);
+  assert.equal(snap.xml, VALID_TASK_XML);
+  const prefixed = a.scheduledTaskSnapshot({ ok: true, code: 0, err: "",
+    out: '<t:Task xmlns:t="http://schemas.microsoft.com/windows/2004/02/mit/task"><t:Settings/></t:Task>' });
+  assert.equal(prefixed.known, true, prefixed.error);
+  const absent = a.scheduledTaskSnapshot(TASK_ABSENT);
+  assert.deepEqual(absent, { known: true, xml: null });
+  for (const r of [
+    { ok: false, code: 1, out: VALID_TASK_XML, err: "" },
+    { ok: true, code: 0, out: VALID_TASK_XML, err: "WARNING: something" },
+  ]) assert.equal(a.scheduledTaskSnapshot(r).known, false, JSON.stringify(r).slice(0, 60));
+});
+
+test("Windows preexisting task that parsed as valid is restored byte-for-byte on rollback", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-restore-"));
+  let restored = null;
+  const fake = windowsRun({ taskXml: VALID_TASK_XML, firewallExists: true });
+  let creates = 0;
+  const run = async (cmd, args) => {
+    if (cmd === "schtasks.exe" && args[0] === "/Create" && ++creates === 2) restored = fs.readFileSync(args[4]);
+    if (cmd === "schtasks.exe" && args[0] === "/Run") return { ok: false, out: "", err: "run failed" };
+    return fake.run(cmd, args);
+  };
+  const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
+  assert.equal(r.ok, false);
+  assert.ok(restored, "rollback re-created the prior task");
+  assert.equal(restored.subarray(2).toString("utf16le"), VALID_TASK_XML);
+});
+
+// Review blocker: firewall presence must come from an exact, unambiguous
+// English netsh shape. Any extra/unknown line, access error, nonzero exit, or
+// conflicting signal is unknown and must stop the install before mutation.
+test("Windows rejects ambiguous firewall discovery output before any write or mutation", async () => {
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const lines = NETSH_PRESENT.split("\r\n");
+  const bad = {
+    "rule name then access denied (review repro)": { ok: true, code: 0, out: "Rule Name: Constellation\r\nAccess is denied.\r\n", err: "" },
+    "full block plus access denied": { ok: true, code: 0, out: NETSH_PRESENT.replace("Ok.", "Access is denied.\r\nOk."), err: "" },
+    "full block with stderr": { ok: true, code: 0, out: NETSH_PRESENT, err: "Access is denied." },
+    "full block nonzero exit": { ok: false, code: 1, out: NETSH_PRESENT, err: "" },
+    "block missing Ok.": { ok: true, code: 0, out: lines.filter((l) => l !== "Ok.").join("\r\n"), err: "" },
+    "block missing separator": { ok: true, code: 0, out: lines.filter((l) => !l.startsWith("---")).join("\r\n"), err: "" },
+    "bare rule name line": { ok: true, code: 0, out: "Rule Name: Constellation\r\nOk.\r\n", err: "" },
+    "other rule name": { ok: true, code: 0, out: NETSH_PRESENT.replace("Constellation", "Constellation2"), err: "" },
+    "present and absent together": { ok: true, code: 0, out: NETSH_PRESENT + "No rules match the specified criteria.\r\n", err: "" },
+    "absent with extra text": { ok: false, code: 1, out: "No rules match the specified criteria.\r\nAccess is denied.\r\n", err: "" },
+    "absent in both streams": { ok: false, code: 1, out: "No rules match the specified criteria.", err: "No rules match the specified criteria." },
+    "absent with odd exit code": { ok: false, code: 5, out: "No rules match the specified criteria.", err: "" },
+    "localized present": { ok: true, code: 0, out: NETSH_PRESENT.replace("Rule Name:", "Nom de la règle :"), err: "" },
+    "unknown field": { ok: true, code: 0, out: NETSH_PRESENT.replace("Enabled:", "Mystery:"), err: "" },
+    "bad enabled value": { ok: true, code: 0, out: NETSH_PRESENT.replace(/Enabled:( +)Yes/, "Enabled:$1Oui"), err: "" },
+    "only Ok.": { ok: true, code: 0, out: "Ok.\r\n", err: "" },
+    "empty success": { ok: true, code: 0, out: "", err: "" },
+  };
+  for (const [label, firewall] of Object.entries(bad)) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-win-fw-"));
+    const calls = [];
+    const run = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "schtasks.exe" && args[0] === "/Query") return TASK_ABSENT;
+      if (cmd === "netsh" && args.includes("show")) return firewall;
+      return { ok: true, code: 0, out: "", err: "" };
+    };
+    const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
+      { run, user: "HOME\\x" });
+    assert.equal(result.ok, false, label);
+    assert.match(result.error, /firewall snapshot/i, label);
+    assert.deepEqual(fs.readdirSync(dataDir), [], `${label}: no file writes`);
+    assert.equal(calls.some((call) => call.includes("/Create") || call.includes("/Delete") ||
+      call.includes("/Run") || call.includes("add") || call.includes("delete")), false, `${label}: no mutation`);
+    assert.equal(a.firewallSnapshot(firewall).known, false, `${label}: parser must report unknown`);
+  }
+});
+
+test("Windows firewall parser recognizes only exact present and absent shapes", () => {
+  assert.deepEqual(a.firewallSnapshot({ ok: true, code: 0, out: NETSH_PRESENT, err: "" }), { known: true, existed: true });
+  const twoBlocks = NETSH_PRESENT.replace("Ok.\r\n", "") + NETSH_PRESENT;
+  assert.deepEqual(a.firewallSnapshot({ ok: true, code: 0, out: twoBlocks, err: "" }), { known: true, existed: true });
+  assert.deepEqual(a.firewallSnapshot(NETSH_ABSENT), { known: true, existed: false });
+  assert.deepEqual(a.firewallSnapshot({ ok: false, code: 1, out: "", err: "No rules match the specified criteria.\r\n" }),
+    { known: true, existed: false });
+});
+
+test("the XML parser ships with the app: @xmldom/xmldom is a runtime dependency", () => {
+  const fs = require("fs"), path = require("path");
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  assert.ok(pkg.dependencies && pkg.dependencies["@xmldom/xmldom"], "must be in dependencies, not only a dev transitive");
+  const lock = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package-lock.json"), "utf8"));
+  assert.ok(lock.packages[""].dependencies && lock.packages[""].dependencies["@xmldom/xmldom"]);
+  assert.notEqual(lock.packages["node_modules/@xmldom/xmldom"].dev, true, "lockfile must not mark it dev-only");
+});
+
 test("Windows accepts only exact machine task XML and exact English absence outcomes", async () => {
   const fs = require("fs"), os = require("os"), path = require("path");
   const missingTask = { ok: false, code: 1, out: "", err: "ERROR: The system cannot find the file specified.\r\n" };
   const missingFirewall = { ok: false, code: 1, out: "", err: "No rules match the specified criteria.\r\n" };
   for (const snapshot of [
     { task: missingTask, firewall: missingFirewall },
-    { task: { ok: true, code: 0, out: "<?xml version=\"1.0\"?><Task><Settings /></Task>\r\n", err: "" },
+    { task: { ok: true, code: 0, out: VALID_TASK_XML + "\r\n", err: "" },
       firewall: missingFirewall },
+    { task: missingTask, firewall: { ok: true, code: 0, out: NETSH_PRESENT, err: "" } },
     { task: missingTask,
       firewall: { ok: true, code: 0, out: "No rules match the specified criteria.\r\n", err: "" } },
   ]) {
@@ -589,7 +750,7 @@ test("Windows /Run failure restores preexisting task, launcher, and XML", async 
   const xml = path.join(dataDir, "constellation-task.xml");
   fs.writeFileSync(launcher, "old launcher");
   fs.writeFileSync(xml, "old xml");
-  const fake = windowsRun({ taskXml: "<Task>old task</Task>", firewallExists: true });
+  const fake = windowsRun({ taskXml: VALID_TASK_XML, firewallExists: true });
   const run = async (cmd, args) => cmd === "schtasks.exe" && args[0] === "/Run"
     ? { ok: false, out: "", err: "run failed" } : fake.run(cmd, args);
   const r = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir }, { run, user: "HOME\\x" });
@@ -633,7 +794,7 @@ test("Windows launcher and XML writes are atomic members of the install transact
       }
       return fs.renameSync(from, to);
     };
-    const fake = windowsRun({ taskXml: "<Task>old task</Task>", firewallExists: true });
+    const fake = windowsRun({ taskXml: VALID_TASK_XML, firewallExists: true });
     const result = await a.installWindows({ exe: "C:\\x\\brain.exe", env: { A: "1" }, dataDir },
       { run: fake.run, user: "HOME\\x", fs: io });
     assert.equal(result.ok, false);

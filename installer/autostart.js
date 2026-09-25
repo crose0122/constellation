@@ -7,6 +7,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFile } = require("child_process");
+const { DOMParser } = require("@xmldom/xmldom");
 
 const UNIT = "constellation.service";
 // Written as the first line of every unit this installer creates. A unit
@@ -18,6 +19,7 @@ function mayWriteUnit(existingText) {
   return existingText == null || String(existingText).startsWith(MARKER);
 }
 const TASK = "Constellation";
+const TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task";
 
 function sh(cmd, args, timeout = 20000) {
   return new Promise((resolve) => execFile(cmd, args, { timeout, windowsHide: true },
@@ -149,24 +151,96 @@ function rollbackResult(errors) {
   return errors.length ? { ok: false, error: errors.join("; ") } : { ok: true };
 }
 
+// A preexisting task is only restorable if its exported definition is a
+// well-formed Task Scheduler document. A real XML parser decides that: any
+// parser warning, error, or fatal error, a DOCTYPE, or a root other than
+// <Task> in the Task Scheduler namespace makes the prior state unknown, and
+// the install stops before writing anything it could not undo.
+function parseTaskXml(xml) {
+  const problems = [];
+  let doc;
+  try {
+    doc = new DOMParser({ onError: (level, message) => { problems.push(`${level}: ${String(message).split("\n")[0]}`); } })
+      .parseFromString(xml, "text/xml");
+  } catch (e) {
+    problems.push(String((e && e.message) || e).split("\n")[0]);
+  }
+  if (problems.length) return { ok: false, error: problems.join("; ") };
+  if (!doc) return { ok: false, error: "no document" };
+  for (let n = doc.firstChild; n; n = n.nextSibling) {
+    if (n.nodeType === 10) return { ok: false, error: "DOCTYPE is not allowed" };
+  }
+  const root = doc.documentElement;
+  if (!root || root.localName !== "Task" || root.namespaceURI !== TASK_NAMESPACE)
+    return { ok: false, error: "root element is not a Task Scheduler <Task>" };
+  return { ok: true };
+}
+
 function scheduledTaskSnapshot(result) {
-  const out = String(result.out || "").trim();
+  const out = String(result.out || "").replace(/^\ufeff/, "").trim();
   const err = String(result.err || "").trim();
-  if (result.ok && !err && /^(?:<\?xml[^>]*>\s*)?<Task\b[^>]*>[\s\S]*<\/Task>$/.test(out))
-    return { known: true, xml: out };
+  if (result.ok && !err && out) {
+    const parsed = parseTaskXml(out);
+    if (parsed.ok) return { known: true, xml: out };
+    return { known: false, error: `scheduled task snapshot is not valid task XML: ${parsed.error}` };
+  }
   if (!result.ok && !out && err === "ERROR: The system cannot find the file specified.")
     return { known: true, xml: null };
   return { known: false, error: `scheduled task snapshot query was ambiguous: ${err || out || "empty response"}` };
+}
+
+// `netsh advfirewall firewall show rule name=Constellation` in English prints
+// one block per matching rule followed by "Ok.", or exactly "No rules match
+// the specified criteria." Only those exact shapes are known; any extra or
+// unrecognized line (access denied, localized text, other rule names, mixed
+// present/absent signals), stderr noise, or unexpected exit code is unknown.
+const NETSH_FIELDS = new Map([
+  ["Enabled", /^(?:Yes|No)$/],
+  ["Direction", /^(?:In|Out)$/],
+  ["Profiles", /^[A-Za-z,]+$/],
+  ["Grouping", /^.*$/],
+  ["LocalIP", /^\S+$/],
+  ["RemoteIP", /^\S+$/],
+  ["Protocol", /^\S+$/],
+  ["LocalPort", /^\S+$/],
+  ["RemotePort", /^\S+$/],
+  ["Edge traversal", /^(?:Yes|No|Defer to application|Defer to user)$/],
+  ["Action", /^(?:Allow|Block|Bypass)$/],
+]);
+const NETSH_ABSENT = "No rules match the specified criteria.";
+
+function netshPresentBlocks(out) {
+  const lines = out.split(/\r?\n/).map((l) => l.replace(/\s+$/, ""));
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  if (lines.pop() !== "Ok.") return false;
+  let i = 0, blocks = 0;
+  while (i < lines.length) {
+    if (lines[i] === "") { i++; continue; }
+    const name = /^Rule Name:\s+(.*)$/.exec(lines[i]);
+    if (!name || name[1] !== TASK) return false;
+    if (!/^-{10,}$/.test(lines[i + 1] || "")) return false;
+    i += 2;
+    const seen = new Set();
+    while (i < lines.length && lines[i] !== "") {
+      const m = /^([A-Za-z ]+?):(?:\s+(.*))?$/.exec(lines[i]);
+      if (!m || !NETSH_FIELDS.has(m[1]) || seen.has(m[1]) || !NETSH_FIELDS.get(m[1]).test(m[2] || "")) return false;
+      seen.add(m[1]);
+      i++;
+    }
+    if (seen.size !== NETSH_FIELDS.size) return false;
+    blocks++;
+  }
+  return blocks > 0;
 }
 
 function firewallSnapshot(result) {
   const out = String(result.out || "").trim();
   const err = String(result.err || "").trim();
   const message = [out, err].filter(Boolean).join("\n");
-  if ((out === "No rules match the specified criteria." && !err) ||
-      (err === "No rules match the specified criteria." && !out))
+  const code = result.ok ? 0 : result.code;
+  if ((code === 0 || code === 1) && ((out === NETSH_ABSENT && !err) || (err === NETSH_ABSENT && !out)))
     return { known: true, existed: false };
-  if (result.ok && !err && out.split(/\r?\n/).some((line) => /^Rule Name:\s+Constellation\s*$/.test(line)))
+  if (result.ok && code === 0 && !err && netshPresentBlocks(out))
     return { known: true, existed: true };
   return { known: false, error: `firewall snapshot query was ambiguous: ${message || "empty response"}` };
 }
@@ -358,4 +432,4 @@ async function install({ exe, envFile, dataDir }) {
 }
 
 module.exports = { systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, installLinux, installWindows, mayWriteUnit,
-  UNIT, TASK, MARKER };
+  scheduledTaskSnapshot, firewallSnapshot, parseTaskXml, TASK_NAMESPACE, UNIT, TASK, MARKER };
