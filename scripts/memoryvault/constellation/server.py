@@ -642,6 +642,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/manifest.json":
                 self._send(200, (STATIC_DIR / "manifest.json").read_bytes(),
                            "application/manifest+json")
+            elif url.path == "/favicon.ico":
+                self._send(200, (STATIC_DIR / "icon-192.png").read_bytes(),
+                           "image/png")
             elif url.path == "/sw.js":
                 # served from the root so the service worker scope covers "/"
                 self._send(200, (STATIC_DIR / "sw.js").read_bytes(),
