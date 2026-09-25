@@ -116,6 +116,15 @@ same as Ollama's.
 
 ## Remaining before handing it to a non-technical user
 
+- **Dependency advisories needing MAJOR bumps** — the lockfile carries no
+  advisory that npm can fix inside current semver ranges (enforced by
+  `test/lockfile-audit.test.js`). The remaining high/critical set
+  (electron-updater AppImage search path GHSA-7g7r-gx96-252g, tar
+  decompression DoS GHSA-23hp-3jrh-7fpw, extract-zip symlink traversal
+  GHSA-jmr9-qjv8-65gv, and the Electron 33 advisory chain) requires
+  Electron 33 → 44 and electron-builder 25 → 26 — breaking major bumps of
+  direct dependencies. Schedule them with a full wizard + e2e regression
+  pass before the next release; do not ship a silent major upgrade.
 - **Icons** — drop `assets/icon.ico` / `icon.icns`.
 - **Code signing** — an unsigned `.exe` triggers SmartScreen; sign it.
 - **Test on real Windows hardware** — GPU detection is written against the
