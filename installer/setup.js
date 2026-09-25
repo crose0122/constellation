@@ -244,6 +244,31 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
   return spawn(IS_WIN ? "docker.exe" : "docker",
     ["compose", "up", "-d"], { cwd: appDir, stdio: "ignore", windowsHide: true });
 }
+
+// Can we actually reach the server? Startup claims are earned, not assumed:
+// the finish screen asks this before it says anything is running. The wall
+// answers without credentials (that is the picture-frame contract), so ANY
+// HTTP response proves the server is alive; only "no connection at all" means
+// not up. Retries inside the timeout budget — a just-spawned server needs a
+// few seconds to bind.
+function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000) {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const tryOnce = () => {
+      const req = require("http").get(
+        { host, port: httpPort, path: "/wall", timeout: 2500 },
+        (res) => { res.resume(); finish(true); });
+      req.on("error", () => {
+        if (Date.now() - started >= timeoutMs) return finish(false);
+        setTimeout(tryOnce, 1000);
+      });
+      req.on("timeout", () => { req.destroy(); }); // fires the error handler
+    };
+    tryOnce();
+  });
+}
 // The screening model ships with the installer (resources/models) so a new
 // install can screen photos with no GPU and no extra download. Without it
 // every photo stops at the screening step and the wall stays empty.
@@ -409,6 +434,10 @@ function startBackgroundSweep(backendDir, cfg) {
   return { ok: true };
 }
 
+// task #130 — a startup claim needs a probe: does anything actually answer on
+// the port the server was told to use? One real bounded HTTP request to /wall;
+// a refusal or timeout is "not up", never an exception. Exported from above.
+
 module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
   writeConfig, configLines, prepare, launchStack, runFirstSweep, startBackgroundSweep, backendExe,
-  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable };
+  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable, serverUp };

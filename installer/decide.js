@@ -111,8 +111,34 @@ function finishUrls(lan, httpPort = 8484, tlsPort = 8485) {
   };
 }
 
+// The finish screen's truth table (task #130). Every claim the wizard makes
+// about startup must be earned by a verified fact:
+//   - startsItself  only when start-on-boot was installed (Linux unit verified,
+//     Windows task created) — never inferred from "the launch worked once";
+//   - running       only when the server actually answered (serverUp probe) or
+//     startup was verified end-to-end;
+//   - ok=false      only when nothing is running — the family still deserves a
+//     working wall tonight, so a one-off launch that works is a success that
+//     honestly says it won't survive a reboot.
+function finishClaims({ autostartOk, started, serverUp, background }) {
+  const running = !!(serverUp || (started && autostartOk));
+  const startsItself = !!autostartOk;
+  const ok = running;
+  let headline;
+  if (running) headline = "You're all set";
+  else headline = "Constellation didn't start";
+  const bootWarning = (ok && !startsItself)
+    ? "Constellation is running now, but it won't start by itself every time this computer turns on."
+    : null;
+  const retryHint = ok ? null
+    : "Open \"Show details\" for what to try next, then click Try again.";
+  return { ok, running, startsItself, headline, bootWarning, retryHint,
+    background: !!background };
+}
+
 const API = { MIN_RAM_GB, MIN_FREE_GB, hardwareFloor, pickDriveFor, recommendMode,
-  storageMath, validatePin, validateBackupTarget, finishUrls, defaultSourceChecked };
+  storageMath, validatePin, validateBackupTarget, finishUrls, defaultSourceChecked,
+  finishClaims };
 // Node (main process, tests) and the wizard page (plain <script>) share this file.
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 else if (typeof window !== "undefined") window.decide = API;

@@ -36,6 +36,9 @@ function systemdUnit({ exe, envFile, httpPort = 8484, tlsPort = 8485 }) {
     "Description=Constellation — family photos, safe at home",
     "After=network-online.target",
     "Wants=network-online.target",
+    // a start-rate limit belongs in [Unit]: systemd silently ignores it in
+    // [Service], which used to leave the unit without the protection it names
+    "StartLimitIntervalSec=0",
     "",
     "[Service]",
     "Type=simple",
@@ -44,7 +47,6 @@ function systemdUnit({ exe, envFile, httpPort = 8484, tlsPort = 8485 }) {
     "Restart=always",
     "RestartSec=5",
     // a picture frame must come back no matter how many times it falls over
-    "StartLimitIntervalSec=0",
     "NoNewPrivileges=yes",
     "PrivateTmp=yes",
     "",
@@ -105,6 +107,14 @@ async function installLinux({ exe, envFile }) {
     return { ok: false, error: `a Constellation service set up by hand already exists (${unitPath}); leaving it alone` };
   }
   fs.writeFileSync(unitPath, systemdUnit({ exe, envFile }));
+  // Verify BEFORE enabling: systemd-analyze warns about an unknown key even
+  // when it exits 0, and a warned unit can mean a protection that never runs
+  // (StartLimitIntervalSec in the wrong section did exactly that). A silent
+  // verify is the only "yes".
+  const verify = await sh("systemd-analyze", ["verify", unitPath]);
+  if (!verify.ok || verify.err.trim() !== "") {
+    return { ok: false, error: `systemd-analyze verify did not pass: ${verify.err.trim() || "exit " + "nonzero"}` };
+  }
   const steps = [
     ["systemctl", ["--user", "daemon-reload"]],
     ["systemctl", ["--user", "enable", "--now", UNIT]],
@@ -116,7 +126,7 @@ async function installLinux({ exe, envFile }) {
   // linger = keep running with nobody logged in (a server in a closet). Best
   // effort: it needs polkit on some distros; without it we still start at login.
   const linger = await sh("loginctl", ["enable-linger", os.userInfo().username]);
-  return { ok: true, linger: linger.ok, unit: path.join(dir, UNIT) };
+  return { ok: true, linger: linger.ok, unit: unitPath };
 }
 
 async function installWindows({ exe, env, dataDir }) {
@@ -127,13 +137,17 @@ async function installWindows({ exe, env, dataDir }) {
   // UTF-16LE with BOM, as schtasks expects for the encoding the XML declares
   fs.writeFileSync(xmlPath, Buffer.concat([Buffer.from([0xff, 0xfe]),
     Buffer.from(windowsTaskXml({ launcher, user }), "utf16le")]));
-  const r = await sh("schtasks.exe", ["/Create", "/TN", TASK, "/XML", xmlPath, "/F"]);
-  if (!r.ok) return { ok: false, error: `schtasks: ${r.err.trim()}` };
-  await sh("schtasks.exe", ["/Run", "/TN", TASK]);
+  const create = await sh("schtasks.exe", ["/Create", "/TN", TASK, "/XML", xmlPath, "/F"]);
+  if (!create.ok) return { ok: false, error: `schtasks /Create: ${create.err.trim()}` };
+  // Startup must be verified, not assumed: a task that exists but refuses to
+  // start is a picture frame that stays dark after the next reboot.
+  const run = await sh("schtasks.exe", ["/Run", "/TN", TASK]);
+  if (!run.ok) return { ok: false, error: `schtasks /Run: ${run.err.trim()}` };
   // Windows Firewall: private networks only (the family LAN), never public.
-  await sh("netsh", ["advfirewall", "firewall", "add", "rule", "name=Constellation",
+  const fw = await sh("netsh", ["advfirewall", "firewall", "add", "rule", "name=Constellation",
     "dir=in", "action=allow", "protocol=TCP", "localport=8484,8485", "profile=private"]);
-  return { ok: true, task: TASK };
+  if (!fw.ok) return { ok: false, error: `firewall rule failed: ${fw.err.trim()}` };
+  return { ok: true, task: TASK, started: true };
 }
 
 function parseEnvFile(text) {
@@ -153,5 +167,5 @@ async function install({ exe, envFile, dataDir }) {
   return { ok: false, error: "This system isn't supported yet (Linux and Windows are)." };
 }
 
-module.exports = { systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, mayWriteUnit,
+module.exports = { systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, installLinux, installWindows, mayWriteUnit,
   UNIT, TASK, MARKER };

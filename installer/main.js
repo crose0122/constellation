@@ -7,6 +7,7 @@ const os = require("os");
 const scan = require("./scan");
 const setup = require("./setup");
 const autostart = require("./autostart");
+const decide = require("./decide");
 const DATA_DIR = () => path.join(app.getPath("home"), "Constellation");
 
 let win;
@@ -88,25 +89,44 @@ ipcMain.handle("finish", async (_e, cfg) => {
     // the family still sees their sky tonight, and say so.
     let auto = { ok: false, error: "no bundled backend" };
     if (exe) auto = await autostart.install({ exe, envFile, dataDir: DATA_DIR() });
-    if (!auto.ok) {
+    let launched = false;
+    if (auto.ok && auto.started) {
+      launched = true;                       // verified by autostart (unit verify + enable / task + Run)
+    } else if (!auto.ok) {
       send({ phase: "launch", msg: `Start-on-boot not set up (${auto.error}); starting just for now.` });
       setup.launchStack(BACKEND_DIR, APP_DIR, cfg, send);
+      launched = true;                       // one-off launch attempted; verified below by the probe
     }
     // the model-bound stages continue after this window closes
     const bg = setup.startBackgroundSweep(BACKEND_DIR, cfg);
-    return { ok: true, autostart: auto.ok, background: !!bg.ok };
+    // Startup claims are earned: ask the server before the wizard says anything
+    // is running. When autostart just started it, give it a few seconds to bind.
+    const lan = lanAddress();
+    const port = 8484;
+    let serverUp = false;
+    if (launched) serverUp = await setup.serverUp("127.0.0.1", port, 15000);
+    const claims = decide.finishClaims({
+      autostartOk: !!auto.ok,
+      started: !!auto.started || launched,
+      serverUp,
+      background: !!bg.ok,
+    });
+    return { ok: claims.ok, autostart: !!auto.ok, background: !!bg.ok,
+      serverUp, autostartError: auto.ok ? null : String(auto.error || ""), ...claims };
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
 // --- IPC: this machine's LAN address, for the TV / phone step --------------
-ipcMain.handle("lanAddress", () => {
+function lanAddress() {
   for (const ifaces of Object.values(os.networkInterfaces() || {})) {
     for (const i of ifaces || []) {
       if (i.family === "IPv4" && !i.internal) return i.address;
     }
   }
   return null;
-});
+}
+
+ipcMain.handle("lanAddress", () => lanAddress());
 
 ipcMain.handle("openUrl", (_e, url) => shell.openExternal(url));
 ipcMain.handle("defaults", () => ({
