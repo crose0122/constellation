@@ -244,4 +244,8 @@ Founder requests captured after V2 approval. Not V2 build gates; they get schedu
 
 **Acceptance:** At 1920×1080 and 2560×1440 in a desktop browser, `/wall` shows 6–7 frames (features included), and every placard is legible without zooming.
 
-**Open:** confirm whether the search/grid page (`/gallery`, thumbnail grid) should also get a lower density on desktop, or just the wall.
+**Status:** built 2026-09-26 on `feat/v2-unify`. Screens ≥1100 CSS px wide (not `?lite`) get a 5×2 grid: one 2×2 feature plus 6 singles, 7 frames in all. `?frames=N` asks for about N; `?frames=0` restores the packed salon. Measured at 1920×1080, 2560×1440 and 1366×768: 7 frames, none off-screen. Lite and small screens are unchanged.
+
+### 13.2 Bigger gallery thumbnails (founder, 2026-09-26)
+
+The searchable thumbnail page (`/gallery`) shows each thumbnail **25% larger**: the grid's minimum cell goes from 110px to 138px. **Status:** built 2026-09-26 on `feat/v2-unify`.
