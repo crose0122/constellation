@@ -244,6 +244,129 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
   return spawn(IS_WIN ? "docker.exe" : "docker",
     ["compose", "up", "-d"], { cwd: appDir, stdio: "ignore", windowsHide: true });
 }
+
+// Can we actually reach the server? Startup claims are earned, not assumed:
+// the finish screen asks this before it says anything is running. The wall
+// answers without credentials (that is the picture-frame contract).  Require
+// its exact status, media type, and title marker: another service or proxy can
+// occupy the port and return a perfectly healthy 404.
+function isHtmlMediaType(value) {
+  if (typeof value !== "string") return false;
+  const token = "[!#$%&'*+\\-.^_`|~0-9A-Za-z]+";
+  const quoted = '"(?:[\\t !#-\\[\\]-~\\x80-\\xff]|\\\\[\\t -~\\x80-\\xff])*"';
+  const parameter = `;[\\t ]*${token}[\\t ]*=[\\t ]*(?:${token}|${quoted})[\\t ]*`;
+  return new RegExp(`^[\\t ]*text/html[\\t ]*(?:${parameter})*$`, "i").test(value);
+}
+
+function serverUp(host = "127.0.0.1", httpPort = 8484, timeoutMs = 8000, runtime = {}) {
+  const http = runtime.http || require("http");
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  return new Promise((resolve) => {
+    let settled = false;
+    let retryTimer = null;
+    let cancelAttempt = null;
+
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      clearTimeout(retryTimer);
+      if (cancelAttempt) cancelAttempt();
+      cancelAttempt = null;
+      resolve(ready);
+    };
+    const retry = () => {
+      if (settled) return;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return finish(false);
+      retryTimer = setTimeout(tryOnce, Math.min(1000, remaining));
+    };
+    const tryOnce = () => {
+      if (settled) return;
+      if (Date.now() >= deadline) return finish(false);
+      let request = null;
+      let response = null;
+      let attemptFinished = false;
+      let ended = false;
+      let body = "";
+      let bytes = 0;
+
+      const destroyAfterRemoving = (emitter, listeners) => {
+        if (!emitter) return;
+        for (const [event, listener] of listeners) emitter.removeListener(event, listener);
+        if (emitter.destroyed) return;
+        const swallowError = () => {};
+        const removeDestroyListeners = () => {
+          emitter.removeListener("error", swallowError);
+          emitter.removeListener("close", removeDestroyListeners);
+        };
+        emitter.once("error", swallowError);
+        emitter.once("close", removeDestroyListeners);
+        emitter.destroy();
+      };
+      const cleanup = () => {
+        destroyAfterRemoving(response, [
+          ["data", onData], ["end", onEnd], ["aborted", failAttempt],
+          ["error", failAttempt], ["close", onResponseClose],
+        ]);
+        destroyAfterRemoving(request, [
+          ["response", onResponse], ["error", failAttempt], ["close", onRequestClose],
+        ]);
+        response = null;
+        request = null;
+        if (cancelAttempt === cancel) cancelAttempt = null;
+      };
+      const cancel = () => {
+        if (attemptFinished) return;
+        attemptFinished = true;
+        cleanup();
+      };
+      const failAttempt = () => {
+        if (attemptFinished || settled) return;
+        attemptFinished = true;
+        cleanup();
+        retry();
+      };
+      const onData = (chunk) => {
+        bytes += Buffer.byteLength(chunk, "utf8");
+        if (bytes > 65536) return failAttempt();
+        body += chunk;
+      };
+      const onEnd = () => {
+        if (attemptFinished || settled) return;
+        ended = true;
+        attemptFinished = true;
+        const type = response.headers["content-type"];
+        const ready = response.statusCode === 200 && isHtmlMediaType(type) &&
+          body.includes("<title>Constellation — the wall</title>");
+        cleanup();
+        if (ready) finish(true); else retry();
+      };
+      const onResponseClose = () => { if (!ended) failAttempt(); };
+      const onRequestClose = () => { if (!response) failAttempt(); };
+      const onResponse = (res) => {
+        if (attemptFinished || settled) {
+          if (!res.destroyed) res.destroy();
+          return;
+        }
+        response = res;
+        res.setEncoding("utf8");
+        res.on("data", onData);
+        res.on("end", onEnd);
+        res.on("aborted", failAttempt);
+        res.on("error", failAttempt);
+        res.on("close", onResponseClose);
+      };
+
+      cancelAttempt = cancel;
+      request = http.get({ host, port: httpPort, path: "/wall", agent: false }, onResponse);
+      request.on("error", failAttempt);
+      request.on("close", onRequestClose);
+    };
+    const deadlineTimer = setTimeout(() => finish(false), Math.max(0, timeoutMs));
+    tryOnce();
+  });
+}
 // The screening model ships with the installer (resources/models) so a new
 // install can screen photos with no GPU and no extra download. Without it
 // every photo stops at the screening step and the wall stays empty.
@@ -409,6 +532,11 @@ function startBackgroundSweep(backendDir, cfg) {
   return { ok: true };
 }
 
+// task #130 — a startup claim needs a probe: does anything actually answer on
+// the port the server was told to use? One real bounded HTTP request to /wall;
+// a refusal or timeout is "not up", never an exception. Exported from above.
+
 module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
   writeConfig, configLines, prepare, launchStack, runFirstSweep, startBackgroundSweep, backendExe,
-  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable };
+  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable,
+  isHtmlMediaType, serverUp };

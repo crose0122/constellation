@@ -12,6 +12,9 @@
     "dist": "electron-builder --win nsis",
     "dist:linux": "electron-builder --linux AppImage"
   },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12"
+  },
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
@@ -28,6 +31,7 @@
       "preload.js",
       "scan.js",
       "setup.js",
+      "finish-install.js",
       "decide.js",
       "autostart.js",
       "ui/**"
