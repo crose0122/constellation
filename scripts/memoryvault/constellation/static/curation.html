@@ -167,11 +167,12 @@ async function load() {
       if (r.status === 409) alert("The vault is locked. Open it first (mvault vault open on the VM), then try again.");
       else alert("Vault move failed — the photo was not touched.");
     };
-    const vaultBtn = actBtn("tovault", "Move to Personal Vault", () => {
-      // first tap reveals the destination choice
-      const a = actBtn("tovault", "→ Casey's folder", () => doVault("casey"));
-      const b = actBtn("tovault", "→ Other", () => doVault("other"));
-      vaultBtn.replaceWith(a, b);
+    const vaultBtn = actBtn("tovault", "Move to Personal Vault", async () => {
+      // first tap reveals the destination choice (folder names from settings)
+      const folders = await vaultFolders();
+      const btns = folders.map((f) => actBtn("tovault",
+        "→ " + f.charAt(0).toUpperCase() + f.slice(1), () => doVault(f)));
+      if (btns.length) vaultBtn.replaceWith(...btns); else doVault("");
     });
     card.appendChild(vaultBtn);
     if (bin !== "Delete") {

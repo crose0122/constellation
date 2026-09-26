@@ -35,4 +35,25 @@
       return res;
     });
   };
+
+  // Named vault folders come from the server's settings (household-specific,
+  // PIN-gated). pickVaultFolder() asks one folder at a time; null = cancelled.
+  var foldersP = null;
+  window.vaultFolders = function () {
+    if (!foldersP) foldersP = window.fetch("/api/vault/folders")
+      .then(function (r) { return r.ok ? r.json() : { folders: [] }; })
+      .then(function (j) { return j.folders || []; })
+      .catch(function () { return []; });
+    return foldersP;
+  };
+  window.pickVaultFolder = function (intro) {
+    return window.vaultFolders().then(function (fs) {
+      for (var i = 0; i < fs.length; i++) {
+        var name = fs[i].charAt(0).toUpperCase() + fs[i].slice(1);
+        if (confirm((i === 0 ? intro + "\n\n" : "") + "OK = the " + name + " folder" +
+                    (i < fs.length - 1 ? " · Cancel = choose another" : ""))) return fs[i];
+      }
+      return null;
+    });
+  };
 })();

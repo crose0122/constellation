@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Pre-push gate for the public Constellation repo.
+#   1. tools/leak_scan.py — no household names, home IPs or real home paths
+#   2. gitleaks (if installed) — credentials. GitHub secret scanning + push
+#      protection also run server-side on this public repo.
+# ENABLE (once per clone):  git config core.hooksPath .githooks
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-push] leak scan…"
+python3 tools/leak_scan.py
+
+if command -v gitleaks >/dev/null 2>&1; then
+  echo "[pre-push] credential scan (gitleaks)…"
+  gitleaks git . --redact --log-level error
+else
+  echo "[pre-push] gitleaks not installed — relying on GitHub push protection for credentials"
+fi
+echo "[pre-push] ✓ clean"

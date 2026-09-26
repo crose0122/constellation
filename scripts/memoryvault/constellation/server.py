@@ -606,6 +606,9 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/login":
             self._send(200, (STATIC_DIR / "login.html").read_bytes(), "text/html")
             return
+        if url.path == "/api/vault/folders":
+            self._json({"folders": list(config.VAULT_FOLDERS)})
+            return
         if url.path == "/api/auth/status":
             self._json({"pin_set": auth.pin_configured(),
                         "signed_in": self._session() is not None,
@@ -1019,7 +1022,7 @@ class Handler(BaseHTTPRequestHandler):
                         {"error": "vault locked"}).encode(), "application/json")
                     return
                 dest = q.get("dest", [""])[0]
-                if dest not in ("casey", "other"):
+                if dest not in config.VAULT_FOLDERS:
                     dest = None
                 wconn = connect(config.DB_PATH)
                 try:

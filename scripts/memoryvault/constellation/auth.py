@@ -47,7 +47,7 @@ ROUTES: dict[str, str] = {
     # private reads — PIN
     "/people": PIN, "/person": PIN, "/curation": PIN,
     "/api/people": PIN, "/api/person": PIN, "/api/curation": PIN,
-    "/api/purged": PIN, "/api/vaulted": PIN,
+    "/api/purged": PIN, "/api/vaulted": PIN, "/api/vault/folders": PIN,
     # anything that changes the library — PIN + CSRF
     "/api/people/notthem": PIN_WRITE, "/api/people/removeall": PIN_WRITE,
     "/api/people/label": PIN_WRITE, "/api/purge": PIN_WRITE,
