@@ -13,6 +13,7 @@ plain regexes — they aren't secret.
 
     tools/leak_scan.py                 # scan all tracked files
     tools/leak_scan.py FILE [FILE...]  # scan specific files
+    tools/leak_scan.py --messages A..B # scan commit messages in range A..B
 """
 import hashlib
 import re
@@ -29,6 +30,8 @@ WORD_HASHES = {
     "270d76c78b081db72f35458cc7b0019ced8e29da7ec15a77d99533a0dcb06c1d",
     "52610e3505010decd3118b58719bfd56409fa76da23ef010d04ab4c4931c4978",
     "eeac7816005ff0bde67004b95a5563844d60901f3db3baaafc62ac4e850e08de",
+    "0357513deb903a056e74a7e475247fc1ffe31d8be4c1d4a31f58dd47ae484100",
+    "09d2b64c387acc00d5aa7627700e6b3ecd4b896696acd6d3528b5fd07374c74e",
     "3ca78c5633a86e7b7dc9db5259569f159dc27211e0f71fbe6dd185f325cd1d2d",
     "85de8a78d7ca467c90fa19881c5aba892d4d0ecbc05e458045b2fedf7f7317ed",
     "8f3c0aab3718b611dd021d6bf8d97040a896945b044e1efff993b456ecd7a986",
@@ -61,7 +64,39 @@ def tracked() -> list[Path]:
     return [Path(p) for p in out.decode().split("\0") if p]
 
 
-def scan(paths) -> list[str]:
+def messages(range_spec: str) -> list[str]:
+    """Commit message blobs (subject + body) for every commit in a rev range.
+
+    A docs-only commit can reintroduce a household name in its MESSAGE even
+    when the file scrub is clean — scan the blobs too so the gate sees them.
+    """
+    out = subprocess.run(["git", "log", "--format=%B", range_spec],
+                         capture_output=True, check=True).stdout
+    return [line for line in out.decode(errors="replace").split("\n") if line.strip()]
+
+
+def scan(lines, label: str = "") -> list[str]:
+    hits = []
+    for n, line in enumerate(line if isinstance(line, str) else str(line) for line in line_or_path_iter(lines)):
+        if ALLOW in line:
+            continue
+        m = STRUCTURAL.search(line)
+        if m:
+            hits.append(f"{n}: private address/path {m.group(0)!r}")
+            continue
+        for w in WORD.findall(line):
+            if h(w) in WORD_HASHES:
+                hits.append(f"{n}: household name (hash {h(w)[:10]}…)")
+                break
+    return hits
+
+
+def line_or_path_iter(paths):
+    for p in paths:
+        yield p
+
+
+def scan_files(paths) -> list[str]:
     hits = []
     for p in paths:
         s = str(p)
@@ -71,17 +106,7 @@ def scan(paths) -> list[str]:
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for i, line in enumerate(text.splitlines(), 1):
-            if ALLOW in line:
-                continue
-            m = STRUCTURAL.search(line)
-            if m:
-                hits.append(f"{s}:{i}: private address/path {m.group(0)!r}")
-                continue
-            for w in WORD.findall(line):
-                if h(w) in WORD_HASHES:
-                    hits.append(f"{s}:{i}: household name (hash {h(w)[:10]}…)")
-                    break
+        hits.extend(scan(text.splitlines()))
     return hits
 
 
@@ -91,8 +116,19 @@ if __name__ == "__main__":
         for w in args[1:]:
             print(f'    "{h(w)}",')
         sys.exit(0)
+    if args[:1] == ["--messages"]:
+        if not args[1:]:
+            print("--messages needs a rev range like A..B", file=sys.stderr)
+            sys.exit(2)
+        hits = scan(messages(args[1]))
+        if hits:
+            print("LEAK SCAN FAILED — household-specific data in commit messages:")
+            print("\n".join(hits[:200]))
+            sys.exit(1)
+        print(f"commit messages clean ({len(args[1])})")
+        sys.exit(0)
     paths = [Path(a) for a in args] if args else tracked()
-    hits = scan(paths)
+    hits = scan_files(paths)
     if hits:
         print("LEAK SCAN FAILED — household-specific data in the public repo:")
         print("\n".join(hits[:200]))

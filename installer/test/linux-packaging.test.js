@@ -34,8 +34,10 @@ test("linux targets: deb is the primary target, AppImage kept as secondary", () 
   const targets = build.linux.target.map((t) => (typeof t === "string" ? t : t.target));
   assert.equal(targets[0], "deb");
   assert.ok(targets.includes("AppImage"));
-  assert.equal(pkg.scripts["dist:linux"],
-    "chmod 0644 linux/apparmor/constellation-setup && electron-builder --linux deb AppImage");
+  // gen:assets (asset-manifest build step, #137) may run first; the profile chmod must
+  // still immediately precede the deb/AppImage build.
+  assert.match(pkg.scripts["dist:linux"],
+    /^(npm run gen:assets && )?chmod 0644 linux\/apparmor\/constellation-setup && electron-builder --linux deb AppImage$/);
   // fpm copies the source mode into the package; a group-writable checkout (umask 002)
   // would ship a group-writable security profile.
   assert.equal(fs.statSync(path.join(ROOT, "linux/apparmor/constellation-setup")).mode & 0o022, 0);

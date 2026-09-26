@@ -9,6 +9,13 @@ cd "$(git rev-parse --show-toplevel)"
 
 echo "[pre-push] leak scan…"
 python3 tools/leak_scan.py
+echo "[pre-push] commit message scan…"
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null | cut -d/ -f1-2 || true)
+if [ -n "$UPSTREAM" ]; then
+  python3 tools/leak_scan.py --messages "@{upstream}..HEAD" || exit 1
+else
+  echo "[pre-push] no upstream configured — skipped message range scan"
+fi
 
 if command -v gitleaks >/dev/null 2>&1; then
   echo "[pre-push] credential scan (gitleaks)…"

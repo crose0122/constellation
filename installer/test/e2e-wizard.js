@@ -10,11 +10,21 @@ const check = (n, c, x = "") => { results.push(!!c); console.log(`${c ? "PASS" :
 
 (async () => {
   const home = fs.mkdtempSync("/tmp/cst-home-");
-  const app = await electron.launch({
-    executablePath: path.resolve(__dirname, "..", "dist/linux-unpacked/constellation-setup"),
-    args: ["--no-sandbox"],
-    env: Object.fromEntries(Object.entries({ ...process.env, HOME: home }).filter(([k]) => !k.startsWith("MEMORYVAULT_") && k !== "CONSTELLATION_SCREEN_MODEL")),
-  });
+  const exe = path.resolve(__dirname, "..", "dist/linux-unpacked/constellation-setup");
+  const env = Object.fromEntries(Object.entries({ ...process.env, HOME: home }).filter(([k]) => !k.startsWith("MEMORYVAULT_") && k !== "CONSTELLATION_SCREEN_MODEL"));
+  // Launch sandboxed first (the packaged baseline): only fall back to
+  // --no-sandbox when this environment cannot run the Chromium sandbox
+  // (CI containers without the SUID helper / unprivileged userns). The
+  // shipped app itself never sets --no-sandbox.
+  let app;
+  try {
+    app = await electron.launch({ executablePath: exe, env });
+    const probe = await app.firstWindow();
+    await probe.title();
+  } catch {
+    console.log("note: sandbox launch failed here — falling back to --no-sandbox (environment, not the app)");
+    app = await electron.launch({ executablePath: exe, args: ["--no-sandbox"], env });
+  }
   // Never let a test reach the real Ollama: replace the download handler in
   // the app's main process before the wizard can call it.
   await app.evaluate(({ ipcMain }) => {
