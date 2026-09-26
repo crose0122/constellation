@@ -37,7 +37,7 @@
   }
   .grid {
     display: grid; gap: 3px; padding: 3px;
-    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(138px, 1fr));   /* v2.1: 25% larger (was 110px) */
   }
   .grid img {
     width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
@@ -134,6 +134,7 @@
   <div id="lbBar"></div>
 </div>
 
+<script src="/static/pin.js"></script>
 <script>
 let photos = [];
 let total = null, loading = false, cur = -1;
@@ -355,11 +356,7 @@ document.getElementById("lbShare").addEventListener("click", async () => {
 });
 document.getElementById("lbVault").addEventListener("click", async () => {
   if (cur < 0) return;
-  const dest = confirm(
-    "Move this photo into the encrypted Personal Vault?\n\n" +
-    "OK = Casey's folder · Cancel then OK = Other")
-    ? "casey"
-    : (confirm("Put it in the Other folder instead?") ? "other" : null);
+  const dest = await pickVaultFolder("Move this photo into the encrypted Personal Vault?");
   if (!dest) return;
   const p = photos[cur];
   const r = await fetch(`/api/photo/vault?id=${p.id}&dest=${dest}`);

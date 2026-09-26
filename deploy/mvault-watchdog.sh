@@ -25,7 +25,7 @@ STALL_MINUTES="${STALL_MINUTES:-25}"
 POLL_SECONDS="${POLL_SECONDS:-60}"
 # Only stages that call out to the vision server or chew media. `brain` is the
 # web server — it is idle by design and must never be killed.
-WATCH_RE="mvault (tag|screen|describe|faces|ingest|curate|dedup|discover)"
+WATCH_RE="mvault (tag|screen|describe|faces|ingest|curate|dedup|bursts|discover)"
 
 declare -A last_cpu last_change
 

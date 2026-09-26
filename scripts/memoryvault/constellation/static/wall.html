@@ -155,6 +155,7 @@
   </div>
 </div>
 <div id="hint"><a href="/">← constellation</a></div>
+<script src="/static/pin.js"></script>
 <script>
 const qs = new URLSearchParams(location.search);
 const DIM = qs.get("dim"), VALUE = qs.get("value");
@@ -202,21 +203,39 @@ function nextItem() {
   return pool[deck[deckPos++]];
 }
 
-// how many frames fit — a packed salon: floor-to-ceiling frames with the
-// constellation glowing through the gaps. Weak devices keep a lighter hang.
+// How many frames hang (spec v2.1 §13.1). A computer / high-res screen gets
+// a calm hang: two rows, one 2x2 feature anchor, 7 pictures in all — big
+// enough to look at and read the placards. More pixels make frames sharper,
+// not more numerous. ?frames=N asks for about N (the nearest two- or
+// three-row hang); ?frames=0 brings back the old packed salon.
+const CALM_MIN_WIDTH = 1100;           // CSS px: desktops, laptops, big TVs
+const CALM_FRAMES = 7;
+const FRAMES_Q = qs.get("frames");
+const FRAMES = FRAMES_Q === null ? null : Math.max(0, parseInt(FRAMES_Q, 10) || 0);
 function gridPlan() {
   const w = document.documentElement.clientWidth;
   const h = document.documentElement.clientHeight;
+  const calm = FRAMES !== null ? FRAMES > 0 : (!LITE && w >= CALM_MIN_WIDTH);
+  if (calm) {
+    // one 2x2 feature + singles: cols x rows cells hold cols*rows - 3 frames
+    const want = Math.max(4, FRAMES || CALM_FRAMES);
+    const rows = want <= 9 ? 2 : 3;
+    const cols = Math.max(3, Math.round((want + 3) / rows));
+    return { cols, rows, frames: cols * rows - 3 };
+  }
+  // packed salon: floor-to-ceiling frames with the constellation glowing
+  // through the gaps. Small screens and weak devices keep this hang.
   const div = LITE ? 460 : 320;
   const cols = Math.max(2, Math.min(LITE ? 4 : 6, Math.round(w / div)));
   const rows = Math.max(2, Math.min(LITE ? 3 : 5, Math.round(h / div)));
-  return { cols, rows };
+  return { cols, rows, frames: null };
 }
 
-let slots = [];
+let slots = [], CALM = false;
 function buildWall() {
   const wall = document.getElementById("wall");
-  const { cols, rows } = gridPlan();
+  const { cols, rows, frames } = gridPlan();
+  CALM = !!frames;
   wall.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   wall.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
   wall.innerHTML = "";
@@ -228,7 +247,11 @@ function buildWall() {
   // always, a second on big walls, placed half the wall apart
   const features = new Set();
   let firstFeature = -1;
-  if (cols >= 3 && rows >= 2) {
+  if (frames) {
+    // calm hang: the one anchor sits in the top row so it spans both rows
+    // and the singles flow around it with no overflow slivers
+    features.add(Math.floor(Math.random() * (cols - 1)));
+  } else if (cols >= 3 && rows >= 2) {
     firstFeature = Math.floor(Math.random() * cells);
     features.add(firstFeature);
     if (cols >= 5) features.add((firstFeature + Math.floor(cells / 2)) % cells);
@@ -236,7 +259,7 @@ function buildWall() {
   let placed = 0, featureNo = 0;
   const dealt = [];
   const FEATURE_PROFILES = ["a-rococo-gilt", "a-baroque-sage"];  // never the same twice
-  for (let i = 0; placed < cells; i++) {
+  for (let i = 0; frames ? i < frames : placed < cells; i++) {
     const frame = document.createElement("div");
     frame.className = "aframe";
     const big = features.has(i) && (placed % cols < cols - 1);
@@ -296,7 +319,8 @@ function buildWall() {
     if (cw < 90 || ch < 90) { s.frame.style.display = "none"; s.dead = true; return; }
     // lived-in hang: generous size spread, frames drift to nearly touch,
     // and hang visibly off level. Features stay full-size and straight.
-    const scale = s.feature ? 1 : 0.65 + 0.35 * hash01(idx, 1);
+    // the calm hang has room to spare, so its singles stay near full size
+    const scale = s.feature ? 1 : (CALM ? 0.88 : 0.65) + (CALM ? 0.12 : 0.35) * hash01(idx, 1);
     const fit = s.ar ? Math.min(cw, ch * s.ar) : cw;
     let bw = Math.max(fit * scale, Math.min(110, fit));   // never postage-stamp
     let bh = s.ar ? bw / s.ar : ch * scale;
@@ -497,10 +521,7 @@ document.getElementById("wlbRemove").addEventListener("click", async () => {
 document.getElementById("wlbVault").addEventListener("click", async () => {
   if (!wlbSlot || !wlbSlot.cur) return;
   const id = wlbSlot.cur.id;
-  const dest = confirm(
-    "Move into the Personal Vault.\n\nOK = Casey's folder · Cancel then OK = Other")
-    ? "casey"
-    : (confirm("Move to the Other folder instead?") ? "other" : null);
+  const dest = await pickVaultFolder("Move into the Personal Vault.");
   if (!dest) return;
   try {
     const r = await fetch(`/api/photo/vault?id=${id}&dest=${dest}`);

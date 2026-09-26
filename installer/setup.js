@@ -63,13 +63,13 @@ const OLLAMA_URLS = {
 };
 function serveEnv(mode) {
   // honor a CPU override: OLLAMA_NUM_GPU=0 keeps inference off the GPU
-  const e = { ...process.env };
+  const e = {};
   if (mode === "cpu") e.OLLAMA_NUM_GPU = "0";
   return e;
 }
 async function installOllama(cfg, onStatus) {
   if (typeof cfg === "function") { onStatus = cfg; cfg = {}; }  // back-compat
-  const env = serveEnv(cfg && cfg.mode);
+  const env = { ...process.env, ...serveEnv(cfg && cfg.mode) };
   const startServe = () => spawn("ollama", ["serve"],
     { detached: true, stdio: "ignore", windowsHide: true, env }).unref();
   if (await ollamaRunning()) { onStatus({ phase: "ollama", pct: 1, msg: "Ollama already running." }); return; }
@@ -133,7 +133,7 @@ function pullModel(model, onStatus) {
             } catch { /* partial */ }
           }
         });
-        res.on("end", () => { onStatus({ phase: "model", pct: 1, msg: "Model ready on your GPU." }); resolve(true); });
+        res.on("end", () => { onStatus({ phase: "model", pct: 1, msg: "Ready." }); resolve(true); });
       });
     req.on("error", reject);
     req.write(body); req.end();
@@ -141,18 +141,83 @@ function pullModel(model, onStatus) {
 }
 
 // --- write config + launch -------------------------------------------------
-function writeConfig(dir, cfg) {
-  fs.mkdirSync(dir, { recursive: true });
-  const env = [
+// The config file. Only paths and choices — never the PIN (the backend keeps
+// a scrypt hash of it in the library's .auth dir) and never a key.
+function configLines(cfg) {
+  return [
     `MEMORYVAULT_LIBRARY_ROOT=${cfg.libraryRoot}`,
     `MEMORYVAULT_VISION_MODEL=${cfg.model}`,
     `MEMORYVAULT_OLLAMA_URL=${OLLAMA}/api/generate`,
     `MEMORYVAULT_VAULT_MODE=${cfg.vaultMode || "dir"}`,
     cfg.mode === "cpu" ? "OLLAMA_NUM_GPU=0" : "",
     cfg.sources && cfg.sources.length ? `MEMORYVAULT_SOURCES=${cfg.sources.join(";")}` : "",
-  ].filter(Boolean).join("\n") + "\n";
-  fs.writeFileSync(path.join(dir, ".env"), env);
-  return path.join(dir, ".env");
+    cfg.backupTarget ? `MEMORYVAULT_BACKUP_TARGET=${cfg.backupTarget}` : "",
+    `MEMORYVAULT_AUTO_UPDATE=${cfg.updates === false ? "0" : "1"}`,
+    screenModelPath() ? `MEMORYVAULT_NSFW_ONNX_PATH=${screenModelPath()}` : "",
+  ].filter(Boolean);
+}
+function writeConfig(dir, cfg) {
+  for (const v of [cfg.libraryRoot, cfg.backupTarget, ...(cfg.sources || [])]) {
+    if (v && /[\r\n]/.test(v)) throw new Error("a folder name contains a line break");
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, ".env");
+  fs.writeFileSync(file, configLines(cfg).join("\n") + "\n", { mode: 0o600 });
+  return file;
+}
+
+// The nearest existing parent of each folder must be writable, or setup would
+// fail later with a raw Python traceback instead of a sentence.
+function firstUnwritable(dirs) {
+  for (const d of dirs) {
+    if (!d) continue;
+    let p = path.resolve(d);
+    while (!fs.existsSync(p) && path.dirname(p) !== p) p = path.dirname(p);
+    try { fs.accessSync(p, fs.constants.W_OK); } catch { return d; }
+  }
+  return null;
+}
+
+// The backend must write the PIN hash and the family keys INSIDE the library
+// the family just chose. A stray MEMORYVAULT_* variable left in the parent
+// environment (an old install, a dev shell) would silently redirect them
+// somewhere else — so every backend call starts from a clean slate and only
+// the installer's own settings are passed through.
+function cleanEnv() {
+  const e = {};
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("MEMORYVAULT_")) e[k] = v;
+  return e;
+}
+
+// Library + family PIN + family certificate, before anything is downloaded, so
+// a mistake here (bad folder, backend missing) shows up in seconds, not after
+// a 6 GB download.
+async function prepare(backendDir, dataDir, cfg) {
+  const exe = backendExe(backendDir);
+  if (!exe) return { ok: false, error: "The Constellation program files are missing. Reinstall and try again." };
+  const unwritable = firstUnwritable([cfg.libraryRoot, cfg.backupTarget]);
+  if (unwritable) {
+    return { ok: false, field: "lib",
+      error: `Constellation can't save files in ${unwritable}. Pick a folder you own, or ask whoever set up this computer to give you access.` };
+  }
+  const envFile = writeConfig(dataDir, cfg);
+  const env = { ...cleanEnv(), ...envFromCfg(cfg) };
+  const run = (args, input) => new Promise((resolve) => {
+    const c = spawn(exe, args, { env, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let err = "";
+    c.stderr.on("data", (b) => { err += b; });
+    c.on("error", (e) => resolve({ ok: false, error: String(e.message || e) }));
+    c.on("close", (code) => resolve({ ok: code === 0, error: err.trim().split("\n").pop() }));
+    if (input != null) c.stdin.end(input + "\n"); else c.stdin.end();
+  });
+  let r = await run(["init"]);
+  if (!r.ok) return { ok: false, field: "lib", detail: r.error,
+    error: "Couldn't create the library. Open \"Show details\" for the technical reason." };
+  r = await run(["pin", "set", "--stdin"], cfg.pin);          // stdin, never argv
+  if (!r.ok) return { ok: false, error: r.error || "Couldn't save the family PIN." };
+  r = await run(["tls", "init"]);
+  if (!r.ok) return { ok: false, error: `Couldn't create the family certificate: ${r.error}` };
+  return { ok: true, envFile };
 }
 
 // Resolve the bundled backend executable, or null when this machine runs the
@@ -171,7 +236,7 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
   if (exe) {
     onStatus({ phase: "launch", msg: "Starting Constellation…" });
     return spawn(exe, ["constellation"], {
-      env: { ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) },
+      env: { ...cleanEnv(), ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) },
       stdio: "ignore", windowsHide: true, detached: true }).unref();
   }
   // fallback for a dev machine that runs the stack via Docker
@@ -179,12 +244,27 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
   return spawn(IS_WIN ? "docker.exe" : "docker",
     ["compose", "up", "-d"], { cwd: appDir, stdio: "ignore", windowsHide: true });
 }
+// The screening model ships with the installer (resources/models) so a new
+// install can screen photos with no GPU and no extra download. Without it
+// every photo stops at the screening step and the wall stays empty.
+function screenModelPath() {
+  const candidates = [
+    process.env.CONSTELLATION_SCREEN_MODEL,
+    process.resourcesPath && path.join(process.resourcesPath, "models", "nsfw-screen.onnx"),
+    path.join(__dirname, "models", "nsfw-screen.onnx"),
+  ].filter(Boolean);
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
 function envFromCfg(cfg) {
+  const screen = screenModelPath();
   return {
+    ...(screen ? { MEMORYVAULT_NSFW_ONNX_PATH: screen } : {}),
     MEMORYVAULT_LIBRARY_ROOT: cfg.libraryRoot,
     MEMORYVAULT_VISION_MODEL: cfg.model,
     MEMORYVAULT_OLLAMA_URL: OLLAMA + "/api/generate",
     MEMORYVAULT_VAULT_MODE: cfg.vaultMode || "dir",
+    MEMORYVAULT_AUTO_UPDATE: cfg.updates === false ? "0" : "1",
+    ...(cfg.backupTarget ? { MEMORYVAULT_BACKUP_TARGET: cfg.backupTarget } : {}),
   };
 }
 
@@ -206,17 +286,36 @@ function envFromCfg(cfg) {
 //       detached and the app's own /progress page reports it filling in.
 //
 // Stage order matches docker/entrypoint.sh, which is the canonical chain.
+// Spec B6: the first sweep reads only the newest photos so the sky is alive
+// the same evening; everything older is ingested by the overnight chain.
+const FIRST_SWEEP_LIMIT = 2000;
 const FOREGROUND_STAGES = [
   { args: ["init"], label: "Preparing the library" },
   // discover is expanded per source folder below
-  { args: ["ingest"], label: "Reading photos (hashing + EXIF)" },
+  { args: ["ingest", "--recent-first", "--progress-json", "--limit", String(FIRST_SWEEP_LIMIT)],
+    label: "Reading your newest photos", counts: true },
   { args: ["curate"], label: "Setting aside screenshots and junk" },
+  { args: ["bursts"], label: "Keeping the best shot of each burst" },
 ];
 
 const BACKGROUND_STAGES = [
+  ["ingest"],                                   // the archive backfill
+  ["curate"],
+  ["bursts"],                                   // keep the sharpest, park the rest
   ["screen"], ["tag"], ["geocode"], ["describe"],
   ["faces", "scan"], ["faces", "cluster"], ["edges"],
 ];
+
+// One stdout line from the backend -> a count for the patient sky, or null.
+function parseProgress(line) {
+  if (!line || line[0] !== "{") return null;
+  try {
+    const j = JSON.parse(line);
+    const p = j && j.progress;
+    if (p && Number.isFinite(p.done) && Number.isFinite(p.total)) return { done: p.done, total: p.total };
+  } catch { /* not a progress line */ }
+  return null;
+}
 
 function runStage(exe, args, env, onLine) {
   return new Promise((resolve) => {
@@ -249,7 +348,7 @@ async function runFirstSweep(backendDir, cfg, onStatus) {
       msg: "Docker install — run `docker compose run --rm memoryvault pipeline`." });
     return { ok: true, skipped: true };
   }
-  const env = { ...process.env, ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
+  const env = { ...cleanEnv(), ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
   const sources = (cfg.sources || []).filter(Boolean);
 
   const stages = [];
@@ -267,8 +366,16 @@ async function runFirstSweep(backendDir, cfg, onStatus) {
     const st = stages[i];
     const base = i / stages.length;
     onStatus({ phase: "sweep", pct: base, msg: st.label + "…" });
-    const r = await runStage(exe, st.args, env, (line) =>
-      onStatus({ phase: "sweep", pct: base, msg: `${st.label} — ${line.slice(0, 90)}` }));
+    const r = await runStage(exe, st.args, env, (line) => {
+      const pr = st.counts ? parseProgress(line) : null;
+      if (pr) {
+        const frac = pr.total ? pr.done / pr.total : 0;
+        onStatus({ phase: "sweep", pct: base + frac / stages.length, count: pr.done,
+          msg: `${st.label} — ${pr.done} of ${pr.total}` });
+      } else {
+        onStatus({ phase: "sweep", pct: base, msg: `${st.label} — ${line.slice(0, 90)}` });
+      }
+    });
     // `init` must succeed — without a database nothing downstream can run.
     // The rest are best-effort: a single unreadable folder is not a reason to
     // strand someone at a setup wizard with no way forward.
@@ -290,7 +397,7 @@ async function runFirstSweep(backendDir, cfg, onStatus) {
 function startBackgroundSweep(backendDir, cfg) {
   const exe = backendExe(backendDir);
   if (!exe) return { ok: false, skipped: true };
-  const env = { ...process.env, ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
+  const env = { ...cleanEnv(), ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
   const q = (s) => IS_WIN ? `"${s}"` : `'${String(s).replace(/'/g, `'\\''`)}'`;
   const chain = BACKGROUND_STAGES
     .map((args) => [exe, ...args].map(q).join(" "))
@@ -303,4 +410,5 @@ function startBackgroundSweep(backendDir, cfg) {
 }
 
 module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
-  writeConfig, launchStack, runFirstSweep, startBackgroundSweep, backendExe };
+  writeConfig, configLines, prepare, launchStack, runFirstSweep, startBackgroundSweep, backendExe,
+  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable };

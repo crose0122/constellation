@@ -21,7 +21,11 @@ class VaultUnavailable(Exception):
     pass
 
 
-VAULT_SUBDIRS = ("", "review", "casey", "other")
+def vault_subdirs() -> tuple[str, ...]:
+    return ("", "review", *config.VAULT_FOLDERS)
+
+
+VAULT_SUBDIRS = vault_subdirs()   # import-time snapshot, kept for callers
 
 
 def is_mounted() -> bool:
@@ -44,7 +48,7 @@ def is_mounted() -> bool:
     """
     if config.VAULT_MODE == "dir":
         try:
-            for sub in VAULT_SUBDIRS:
+            for sub in vault_subdirs():
                 (config.VAULT_MOUNT / sub).mkdir(parents=True, exist_ok=True)
         except OSError:
             return False
@@ -69,7 +73,7 @@ def open_vault():
         ["sudo", "chown", f"{os.getenv('USER', 'root')}:", str(config.VAULT_MOUNT)],
         check=True,
     )
-    for sub in VAULT_SUBDIRS:
+    for sub in vault_subdirs():
         (config.VAULT_MOUNT / sub).mkdir(exist_ok=True)
 
 
@@ -234,14 +238,14 @@ def keep_in_vault(filename: str) -> dict:
 def route_to_vault(conn, photo_id: int, review: bool, dest: str | None = None):
     """Move a flagged photo into the mounted vault and scrub every trace of it
     from the database (SPEC.md invariant #3). Only aggregate counters remain.
-    dest picks a vault subfolder ('casey'/'other') for user-initiated moves."""
+    dest picks a named vault folder (config.VAULT_FOLDERS) for user moves."""
     if not is_mounted():
         raise VaultUnavailable(f"vault not mounted at {config.VAULT_MOUNT}")
 
     row = conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
     if row is None:
         return
-    sub = "review" if review else (dest if dest in ("casey", "other") else "")
+    sub = "review" if review else (dest if dest in config.VAULT_FOLDERS else "")
     dest_dir = config.VAULT_MOUNT / sub
     dest_dir.mkdir(exist_ok=True)
 

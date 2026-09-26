@@ -20,9 +20,9 @@
 #   DRY=1 deploy-vm.sh        # show what would change, touch nothing
 set -euo pipefail
 
-REPO="${REPO:-$HOME/your-repo}"
+REPO="${REPO:-$HOME/constellation}"
 VM="${VM:-you@your-pipeline-host}"
-DEST="${DEST:-$HOME/your-repo/MemoryVault/.scripts}"
+DEST="${DEST:-$HOME/constellation/scripts}"
 # The unit has been renamed once already (brain -> constellation), so find it
 # rather than hardcode it. A deploy that "succeeds" while restarting nothing is
 # worse than one that fails.
@@ -35,9 +35,9 @@ cd "$REPO"
 # 1. Deploy only what is committed AND pushed. Deploying a dirty tree is how
 #    the VM ended up holding code that existed nowhere else.
 git fetch -q origin 2>/dev/null || echo "warning: could not fetch; using local refs"
-if [ -n "$(git status --porcelain -- MemoryVault/.scripts)" ]; then
+if [ -n "$(git status --porcelain -- scripts)" ]; then
   echo "REFUSING: .scripts has uncommitted changes. Commit and push first:"
-  git status --short -- MemoryVault/.scripts
+  git status --short -- scripts
   exit 1
 fi
 SHA=$(git rev-parse --short "$REF")
@@ -46,8 +46,8 @@ echo "deploying $REF ($SHA) -> $VM:$DEST"
 # 2. Export the tree from git into a staging dir — never from the working copy.
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-git archive "$REF" MemoryVault/.scripts | tar -x -C "$STAGE"
-SRC="$STAGE/MemoryVault/.scripts"
+git archive "$REF" scripts | tar -x -C "$STAGE"
+SRC="$STAGE/scripts"
 [ -d "$SRC/memoryvault" ] || { echo "REFUSING: export has no memoryvault package"; exit 1; }
 
 # 3. Sync. --delete so the VM matches git exactly: a file deleted or renamed in

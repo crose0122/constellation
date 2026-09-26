@@ -2,14 +2,14 @@
   "name": "constellation-setup",
   "productName": "Constellation Setup",
   "version": "0.1.0",
-  "description": "GUI installer for Constellation — scans your hardware, recommends and downloads the vision AI onto your GPU, and launches the app.",
+  "description": "Constellation installer \u2014 one evening from a spare PC to your family photos on the wall. No GPU needed, no terminal, nothing leaves your network.",
   "main": "main.js",
   "author": "Constellation",
   "license": "SEE LICENSE IN ../README.md",
   "scripts": {
     "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
     "dist": "electron-builder --win nsis",
-    "dist:mac": "electron-builder --mac dmg",
     "dist:linux": "electron-builder --linux AppImage"
   },
   "devDependencies": {
@@ -19,13 +19,33 @@
   "build": {
     "appId": "com.constellation.setup",
     "productName": "Constellation Setup",
-    "directories": { "output": "dist", "buildResources": "assets" },
-    "files": ["main.js", "preload.js", "scan.js", "setup.js", "ui/**"],
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "scan.js",
+      "setup.js",
+      "decide.js",
+      "autostart.js",
+      "ui/**"
+    ],
     "extraResources": [
-      { "from": "../scripts/dist/memoryvault-brain", "to": "backend" }
+      {
+        "from": "../scripts/dist/memoryvault-brain",
+        "to": "backend"
+      },
+      {
+        "from": "models",
+        "to": "models"
+      }
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico"
     },
     "nsis": {
@@ -34,7 +54,11 @@
       "createDesktopShortcut": true,
       "shortcutName": "Constellation Setup"
     },
-    "mac": { "target": ["dmg"], "icon": "assets/icon.icns", "category": "public.app-category.photography" },
-    "linux": { "target": ["AppImage"], "category": "Graphics" }
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics"
+    }
   }
 }

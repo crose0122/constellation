@@ -37,7 +37,25 @@ def cmd_ingest(args):
     from .ingest import ingest
 
     with _conn() as conn:
-        print(ingest(conn, limit=args.limit, sample=args.sample))
+        progress = None
+        if args.progress_json:
+            import json as _json
+
+            def progress(done, total):
+                print(_json.dumps({"progress": {"done": done, "total": total}}), flush=True)
+        print(ingest(conn, limit=args.limit, sample=args.sample,
+                     recent_first=args.recent_first, progress=progress), flush=True)
+
+
+def cmd_bursts(args):
+    from . import bursts
+
+    with _conn() as conn:
+        if args.release is not None:
+            ok = bursts.release(conn, args.release)
+            print("released" if ok else "that photo isn't parked")
+            return
+        print(bursts.cull(conn), flush=True)
 
 
 def cmd_dedup(args):
@@ -192,6 +210,45 @@ def cmd_review(args):
                   f"{r['keeper_photo_id']}, {r['pending']} pending")
 
 
+def cmd_pin(args):
+    """Set or check the family PIN (V2 CP1). Prompted, never an argument, so it
+    never lands in shell history or `ps`."""
+    import getpass
+
+    from .constellation import auth
+
+    if args.action == "status":
+        print("family PIN: " + ("set" if auth.pin_configured() else "NOT SET"))
+        return
+    if args.stdin:
+        # the installer pipes it in: never argv (visible in `ps`), never env
+        first = sys.stdin.readline().rstrip("\r\n")
+    else:
+        first = getpass.getpass("New family PIN: ")
+        if getpass.getpass("Again: ") != first:
+            raise SystemExit("PINs didn't match; nothing changed")
+    try:
+        auth.set_pin(first)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    print("family PIN set; everyone is signed out")
+
+
+def cmd_tls(args):
+    """Create or refresh the family certificate (V2 CP2). Idempotent."""
+    from .constellation import tls
+
+    if args.action == "status":
+        print("family certificate: " + ("ready" if tls.configured() else "NOT SET"))
+        return
+    r = tls.init(names=args.name or None, ips=args.ip or None,
+                 family_name=args.family or "Our")
+    print(("created family CA; " if r["created_ca"] else "reused family CA; ")
+          + ("issued server certificate" if r["reissued_server_cert"] else "server certificate current"))
+    print("names: " + ", ".join(r["names"] + r["ips"]))
+    print("phones/TVs trust it by installing: " + r["dir"] + "/ca.pem (also served at /ca.pem)")
+
+
 def cmd_vault(args):
     from . import vault
 
@@ -258,7 +315,7 @@ def cmd_migrate_quarantine(args):
 def cmd_constellation(args):
     from .constellation.server import serve
 
-    serve(host=args.host, port=args.port)
+    serve(host=args.host, port=args.port, tls_port=args.tls_port)
 
 
 def cmd_demo(args):
@@ -288,6 +345,14 @@ def main(argv=None):
     i.add_argument("--limit", type=int)
     i.add_argument("--sample", action="store_true",
                    help="random order (for the M1.5 sample)")
+    i.add_argument("--recent-first", action="store_true",
+                   help="newest files first (first sweep: sky fills with recent photos)")
+    i.add_argument("--progress-json", action="store_true",
+                   help="emit one JSON progress line per 25 files (installer count-up)")
+
+    bu = sub.add_parser("bursts", help="keep the sharpest photo of each burst, park the rest")
+    bu.add_argument("--release", type=int, metavar="PHOTO_ID",
+                    help="bring one parked photo back")
 
     dd = sub.add_parser("dedup", help="near-duplicate detection")
     dd.add_argument("--threshold", type=int)
@@ -372,6 +437,17 @@ def main(argv=None):
     v.add_argument("--delete", nargs="*", metavar="FILE",
                    help="review verdict: garbage — shred it (no undo)")
 
+    tl = sub.add_parser("tls", help="create/refresh the family HTTPS certificate")
+    tl.add_argument("action", choices=["init", "status"])
+    tl.add_argument("--name", action="append", help="DNS name (repeatable)")
+    tl.add_argument("--ip", action="append", help="IP address (repeatable)")
+    tl.add_argument("--family", help="shown in the certificate name")
+
+    pn = sub.add_parser("pin", help="set or check the family PIN (private pages)")
+    pn.add_argument("action", choices=["set", "status"])
+    pn.add_argument("--stdin", action="store_true",
+                    help="read the PIN from one line of stdin (used by the installer)")
+
     c = sub.add_parser("calibrate", help="sweep screening thresholds on labeled samples")
     c.add_argument("--safe", required=True, help="folder of known-safe photos")
     c.add_argument("--flagged", required=True, help="folder of flagged-set photos")
@@ -386,6 +462,7 @@ def main(argv=None):
                         "(brain = deprecated alias, kept for the live systemd unit)")
     b.add_argument("--host", default="0.0.0.0")
     b.add_argument("--port", type=int, default=8484)
+    b.add_argument("--tls-port", type=int, default=8485)
 
     dm = sub.add_parser("demo", help="build + serve a synthetic demo library")
     dm.add_argument("--dir")
@@ -398,9 +475,9 @@ def main(argv=None):
     _apply_library_override(args)
     {
         "init": cmd_init, "discover": cmd_discover, "ingest": cmd_ingest,
-        "dedup": cmd_dedup, "screen": cmd_screen, "tag": cmd_tag,
+        "dedup": cmd_dedup, "bursts": cmd_bursts, "screen": cmd_screen, "tag": cmd_tag,
         "notes": cmd_notes, "edges": cmd_edges, "status": cmd_status,
-        "retry": cmd_retry, "review": cmd_review, "vault": cmd_vault,
+        "retry": cmd_retry, "review": cmd_review, "vault": cmd_vault, "pin": cmd_pin, "tls": cmd_tls,
         "curate": cmd_curate, "faces": cmd_faces, "geocode": cmd_geocode,
         "describe": cmd_describe, "placards": cmd_placards,
         "calibrate": cmd_calibrate, "migrate-quarantine": cmd_migrate_quarantine,

@@ -27,6 +27,34 @@ class ScreenError(Exception):
 
 _classifier = None
 
+# ViT preprocessing for the Falconsai checkpoint (preprocessor_config.json):
+# 224x224 bilinear, rescale 1/255, normalize mean=std=0.5, NCHW, logits [normal, nsfw]
+_ONNX_SIZE = 224
+
+
+def onnx_scorer(model_path: str):
+    """Score with the ONNX export of the same Falconsai model, via onnxruntime
+    (already bundled for faces). ~87 MB instead of torch + transformers
+    (~2 GB), so the installed app can screen without a GPU or a huge download.
+    Parity with the transformers path is checked in the V2 build evidence."""
+    import numpy as np
+    import onnxruntime as ort
+    from PIL import Image
+
+    sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    name = sess.get_inputs()[0].name
+
+    def score(path: str) -> float:
+        with Image.open(path) as im:
+            im = im.convert("RGB").resize((_ONNX_SIZE, _ONNX_SIZE), Image.BILINEAR)
+            x = (np.asarray(im, dtype=np.float32) / 255.0 - 0.5) / 0.5
+        x = x.transpose(2, 0, 1)[None, ...]
+        logits = sess.run(None, {name: x})[0][0].astype(np.float64)
+        e = np.exp(logits - logits.max())
+        return float(e[1] / e.sum())
+
+    return score
+
 
 def _load_classifier():
     """Fast local NSFW classifier. Tries opennsfw2, then a local
@@ -53,6 +81,14 @@ def _load_classifier():
         return _classifier
     except ImportError:
         pass
+    if config.NSFW_ONNX_PATH:
+        try:
+            _classifier = onnx_scorer(config.NSFW_ONNX_PATH)
+            return _classifier
+        except (ImportError, OSError, RuntimeError) as e:
+            # a configured-but-broken model must not silently fall through to
+            # "no screening": say so; transformers is tried next if present
+            print(f"  ONNX screener unavailable ({e}); trying transformers", flush=True)
     try:
         from transformers import pipeline
 
