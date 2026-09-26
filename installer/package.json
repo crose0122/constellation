@@ -13,6 +13,9 @@
     "dist": "electron-builder --win nsis",
     "dist:linux": "chmod 0644 linux/apparmor/constellation-setup && electron-builder --linux deb AppImage"
   },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12"
+  },
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
@@ -29,6 +32,7 @@
       "preload.js",
       "scan.js",
       "setup.js",
+      "finish-install.js",
       "decide.js",
       "autostart.js",
       "ui/**"

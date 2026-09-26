@@ -269,7 +269,7 @@ const VIEWS = {
     main.innerHTML = `
       <h2>Your sky is filling up</h2>
       <p class="sub">Reading your newest photos first so you can see them tonight.
-        Older ones keep arriving overnight on their own.</p>
+        Setup will report whether older ones can continue unattended.</p>
       <div class="sky" id="sky" aria-hidden="true"></div>
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -331,14 +331,12 @@ const VIEWS = {
       return;
     }
     const u = D.finishUrls(await S.lanAddress());
-    const bootLine = r.startsItself
-      ? "Constellation starts by itself whenever this computer turns on."
-      : esc(r.bootWarning || "Constellation is running now, but it won't start by itself when this computer turns on.");
+    const copy = D.finishCopy(r);
     main.innerHTML = `<div class="big"><div class="icon">🌌</div>
       <h2 style="margin-top:0.6rem">${esc(r.headline || "You're all set")}</h2>
       <p class="sub" style="max-width:540px;margin:0.6rem auto 1rem">
-        ${bootLine}
-        Your newest photos are in; the rest arrive overnight.</p>
+        ${esc(copy.startup)}
+        ${esc(copy.progress)}</p>
       ${!r.startsItself && r.autostartError ? `<p class="muted" style="max-width:540px;margin:0 auto 0.8rem">Start-on-boot couldn't be set up (${esc(r.autostartError)}).</p>` : ""}
       <button class="primary" id="openWall">Open the sky</button>
       <div class="card" style="text-align:left;max-width:540px;margin:1.4rem auto 0">
