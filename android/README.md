@@ -79,4 +79,5 @@ python3 scripts/tools/make_launcher_art.py --preview  # + previews under build/
 ```
 
 Output is deterministic — regenerating without changing the figure produces no diff.
-Needs Pillow, numpy, and `fonts-lato` for the banner's wordmark.
+It needs Pillow and numpy; the pinned Lato fonts and their OFL notice are versioned
+under `scripts/tools/assets/fonts/lato/`.

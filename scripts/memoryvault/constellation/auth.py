@@ -37,7 +37,7 @@ ROUTES: dict[str, str] = {
     # display surfaces — open
     "/": OPEN, "/ambient": OPEN, "/memories": OPEN, "/wall": OPEN,
     "/menu": OPEN, "/home": OPEN, "/gallery": OPEN, "/node": OPEN,
-    "/progress": OPEN, "/manifest.json": OPEN, "/sw.js": OPEN,
+    "/progress": OPEN, "/manifest.json": OPEN, "/favicon.ico": OPEN, "/sw.js": OPEN,
     "/login": OPEN, "/api/dbg": OPEN, "/ca.pem": OPEN,
     "/api/progress": OPEN, "/api/categories": OPEN, "/api/index": OPEN,
     "/api/category": OPEN, "/api/catphoto": OPEN, "/api/family": OPEN,

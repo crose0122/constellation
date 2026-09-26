@@ -41,7 +41,8 @@ produces a spurious diff.
     python3 scripts/tools/make_launcher_art.py            # write all assets
     python3 scripts/tools/make_launcher_art.py --preview  # + build/ previews
 
-Needs Pillow, numpy, and the Lato family (fonts-lato) for the wordmark.
+Needs Pillow and numpy. The OFL-licensed Lato wordmark fonts are pinned under
+``scripts/tools/assets/fonts/lato`` so output never depends on host fonts.
 """
 from __future__ import annotations
 
@@ -97,7 +98,8 @@ RES = os.path.join(REPO, "android", "app", "src", "main", "res")
 STATIC = os.path.join(REPO, "scripts", "memoryvault", "constellation", "static")
 INSTALLER = os.path.join(REPO, "installer")
 
-LATO = "/usr/share/fonts/truetype/lato/Lato-{}.ttf"
+LATO = os.path.join(os.path.dirname(__file__), "assets", "fonts", "lato",
+                    "Lato-{}.ttf")
 
 
 # ------------------------------------------------------------- primitives ---
@@ -245,7 +247,7 @@ def _tracked(draw: ImageDraw.ImageDraw, cx: float, baseline: float, text: str,
 def _font(style: str, size: int) -> ImageFont.FreeTypeFont:
     path = LATO.format(style)
     if not os.path.exists(path):
-        sys.exit(f"missing font {path} — install fonts-lato")
+        sys.exit(f"missing repository font {path}")
     return ImageFont.truetype(path, size)
 
 
