@@ -7,6 +7,8 @@ const os = require("os");
 const scan = require("./scan");
 const setup = require("./setup");
 const autostart = require("./autostart");
+const decide = require("./decide");
+const { finishInstall } = require("./finish-install");
 const DATA_DIR = () => path.join(app.getPath("home"), "Constellation");
 
 let win;
@@ -81,32 +83,30 @@ ipcMain.handle("sweep", async (_e, cfg) => {
 ipcMain.handle("finish", async (_e, cfg) => {
   const send = (p) => win && win.webContents.send("progress", p);
   try {
-    const envFile = setup.writeConfig(DATA_DIR(), cfg);
-    const exe = setup.backendExe(BACKEND_DIR);
-    // Start on boot (systemd user unit / Scheduled Task). If that works it
-    // also starts the server now; otherwise fall back to a one-off launch so
-    // the family still sees their sky tonight, and say so.
-    let auto = { ok: false, error: "no bundled backend" };
-    if (exe) auto = await autostart.install({ exe, envFile, dataDir: DATA_DIR() });
-    if (!auto.ok) {
-      send({ phase: "launch", msg: `Start-on-boot not set up (${auto.error}); starting just for now.` });
-      setup.launchStack(BACKEND_DIR, APP_DIR, cfg, send);
-    }
-    // the model-bound stages continue after this window closes
-    const bg = setup.startBackgroundSweep(BACKEND_DIR, cfg);
-    return { ok: true, autostart: auto.ok, background: !!bg.ok };
+    return await finishInstall({ cfg, dataDir: DATA_DIR(), backendDir: BACKEND_DIR,
+      appDir: APP_DIR, send, deps: {
+        writeConfig: setup.writeConfig,
+        backendExe: setup.backendExe,
+        installAutostart: autostart.install,
+        launchStack: setup.launchStack,
+        serverUp: setup.serverUp,
+        startBackgroundSweep: setup.startBackgroundSweep,
+        finishClaims: decide.finishClaims,
+      } });
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
 // --- IPC: this machine's LAN address, for the TV / phone step --------------
-ipcMain.handle("lanAddress", () => {
+function lanAddress() {
   for (const ifaces of Object.values(os.networkInterfaces() || {})) {
     for (const i of ifaces || []) {
       if (i.family === "IPv4" && !i.internal) return i.address;
     }
   }
   return null;
-});
+}
+
+ipcMain.handle("lanAddress", () => lanAddress());
 
 ipcMain.handle("openUrl", (_e, url) => shell.openExternal(url));
 ipcMain.handle("defaults", () => ({

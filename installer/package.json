@@ -2,7 +2,8 @@
   "name": "constellation-setup",
   "productName": "Constellation Setup",
   "version": "0.1.0",
-  "description": "Constellation installer — one evening from a spare PC to your family photos on the wall. No GPU needed, no terminal, nothing leaves your network.",
+  "description": "Constellation installer \u2014 one evening from a spare PC to your family photos on the wall. No GPU needed, no terminal, nothing leaves your network.",
+  "homepage": "https://github.com/crose0122/constellation",
   "main": "main.js",
   "author": "Constellation",
   "license": "SEE LICENSE IN ../README.md",
@@ -12,7 +13,10 @@
     "test": "node --test \"test/*.test.js\"",
     "gen:assets": "node ../scripts/gen-shipped-assets.js",
     "dist": "npm run gen:assets && electron-builder --win nsis",
-    "dist:linux": "npm run gen:assets && electron-builder --linux AppImage"
+    "dist:linux": "npm run gen:assets && chmod 0644 linux/apparmor/constellation-setup && electron-builder --linux deb AppImage"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.12"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -30,6 +34,7 @@
       "preload.js",
       "scan.js",
       "setup.js",
+      "finish-install.js",
       "decide.js",
       "autostart.js",
       "ui/**"
@@ -58,9 +63,22 @@
     },
     "linux": {
       "target": [
+        "deb",
         "AppImage"
       ],
-      "category": "Graphics"
+      "category": "Graphics",
+      "executableName": "constellation-setup",
+      "maintainer": "Constellation"
+    },
+    "deb": {
+      "depends": [
+        "apparmor"
+      ],
+      "afterInstall": "linux/deb/after-install.sh",
+      "afterRemove": "linux/deb/after-remove.sh",
+      "fpm": [
+        "linux/apparmor/constellation-setup=/etc/apparmor.d/constellation-setup"
+      ]
     }
   }
 }

@@ -269,7 +269,7 @@ const VIEWS = {
     main.innerHTML = `
       <h2>Your sky is filling up</h2>
       <p class="sub">Reading your newest photos first so you can see them tonight.
-        Older ones keep arriving overnight on their own.</p>
+        Setup will report whether older ones can continue unattended.</p>
       <div class="sky" id="sky" aria-hidden="true"></div>
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -320,16 +320,24 @@ const VIEWS = {
     nextBtn.style.display = "none";
     const r = await S.finish(state.cfg);
     if (!r.ok) {
+      // Never a fake success: the server did not answer, so say what to do next.
       main.innerHTML = `<div class="big"><div class="icon">⚠</div>
-        <h2>Constellation didn't start</h2><p class="sub">${esc(r.error)}</p></div>`;
+        <h2>${esc(r.headline || "Constellation didn't start")}</h2>
+        <p class="sub">${esc(r.error || r.autostartError || "Nothing is answering yet.")}</p>
+        <p class="muted">${esc(r.retryHint || "Click Try again.")}</p></div>`;
+      nextBtn.style.display = "";
+      nextBtn.textContent = "Try again";
+      nextBtn.onclick = () => go(5);
       return;
     }
     const u = D.finishUrls(await S.lanAddress());
+    const copy = D.finishCopy(r);
     main.innerHTML = `<div class="big"><div class="icon">🌌</div>
-      <h2 style="margin-top:0.6rem">You're all set</h2>
+      <h2 style="margin-top:0.6rem">${esc(r.headline || "You're all set")}</h2>
       <p class="sub" style="max-width:540px;margin:0.6rem auto 1rem">
-        Constellation starts by itself whenever this computer turns on.
-        Your newest photos are in; the rest arrive overnight.</p>
+        ${esc(copy.startup)}
+        ${esc(copy.progress)}</p>
+      ${!r.startsItself && r.autostartError ? `<p class="muted" style="max-width:540px;margin:0 auto 0.8rem">Start-on-boot couldn't be set up (${esc(r.autostartError)}).</p>` : ""}
       <button class="primary" id="openWall">Open the sky</button>
       <div class="card" style="text-align:left;max-width:540px;margin:1.4rem auto 0">
         <b>📺 On the TV</b>

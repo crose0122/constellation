@@ -1,0 +1,21 @@
+# AppArmor profile for Constellation Setup (installed by the .deb).
+#
+# Ubuntu 24.04+ sets kernel.apparmor_restrict_unprivileged_userns=1, which denies
+# Electron's user-namespace sandbox and makes the app abort at launch. This profile
+# follows Ubuntu's own profiles for Chrome/VS Code/Slack: it confines nothing
+# (flags=unconfined) and only grants `userns` to this one installed binary.
+# It never relaxes the restriction for anything else on the system.
+#
+# This only works for a binary at a FIXED path. An AppImage runs from a random
+# /tmp/.mount_* directory, so no profile can target it — that is why the .deb (which
+# installs to /opt) is the supported Linux install and the AppImage is secondary.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile constellation-setup "/opt/Constellation Setup/constellation-setup" flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/constellation-setup>
+}
