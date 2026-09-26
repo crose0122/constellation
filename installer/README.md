@@ -114,6 +114,12 @@ the tag schema are correctly packaged). The `.spec` collects the heavy ML libs
 (insightface, onnxruntime, opencv) and the model weights download at first use,
 same as Ollama's.
 
+## Branding assets
+
+The Windows, Linux, and macOS icon files under `assets/` are generated with the
+Android and web artwork by `../scripts/tools/make_launcher_art.py`. Regeneration
+uses repository-owned fonts and is byte-reproducible; do not hand-edit the icons.
+
 ## Remaining before handing it to a non-technical user
 
 - **Dependency advisories needing MAJOR bumps** — the lockfile carries no
@@ -125,7 +131,6 @@ same as Ollama's.
   Electron 33 → 44 and electron-builder 25 → 26 — breaking major bumps of
   direct dependencies. Schedule them with a full wizard + e2e regression
   pass before the next release; do not ship a silent major upgrade.
-- **Icons** — drop `assets/icon.ico` / `icon.icns`.
 - **Code signing** — an unsigned `.exe` triggers SmartScreen; sign it.
 - **Test on real Windows hardware** — GPU detection is written against the
   documented Windows commands and validated on Linux's fallback paths; run the
