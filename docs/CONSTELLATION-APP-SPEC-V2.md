@@ -222,3 +222,26 @@ Beta: this house first (it always was); the one external beta family (G2, identi
 3. legal review: exact escalation-policy text (before P4 classifier ships).
 4. E4: Apple Developer account enrollment ($99/yr) before TestFlight build.
 5. Commit strategy: interview kit + this spec currently uncommitted (Photo-Project is on `fix/app-window-icon` with an unrelated dirty spec file) — land on a clean `spec/v2` branch at sign-off.
+
+---
+
+## 13. Next version (v2.1) — queued changes
+
+Founder requests captured after V2 approval. Not V2 build gates; they get scheduled in the next version.
+
+### 13.1 Calmer gallery wall on desktop / high-res screens (founder, 2026-09-26)
+
+**Problem:** On a computer or other high-resolution screen, the gallery wall (`/wall`) packs in too many frames (about 12–15 or more). It feels busy and you can't actually look at any one picture or read its placard.
+
+**Cause (as built):** `gridPlan()` in `scripts/memoryvault/constellation/static/wall.html` sizes the grid from screen pixels (`320px` per cell, up to 6 × 5). A 1920×1080 screen gets 6 × 3 cells, or about 16 frames. A 2560×1440 screen gets 6 × 5 cells, or about 28 frames.
+
+**Requirement:**
+- Default (non-lite) wall on desktop / high-res displays shows **about 6–7 frames**, not a screen-filling salon. Frames are larger and placards are readable from a normal viewing distance.
+- The frame count is set by a target count, not by pixel density. Higher resolution makes frames sharper, not more numerous.
+- Keep the 2×2 feature frame(s) for rhythm, counting them toward the 6–7 total.
+- Lite / TV-box mode and small screens are unchanged unless they exceed the same cap.
+- A URL override (e.g. `?frames=N`) stays available for anyone who wants a denser wall.
+
+**Acceptance:** At 1920×1080 and 2560×1440 in a desktop browser, `/wall` shows 6–7 frames (features included), and every placard is legible without zooming.
+
+**Open:** confirm whether the search/grid page (`/gallery`, thumbnail grid) should also get a lower density on desktop, or just the wall.
