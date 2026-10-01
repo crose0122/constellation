@@ -1,0 +1,684 @@
+"""Core pipeline tests — runnable with plain `python3 tests/test_core.py`.
+
+Covers release-gate behaviors that can be verified without a
+GPU, Ollama, or a LUKS device: ingest/dedup correctness, screening verdict
+logic incl. fail-safe error semantics, vault scrubbing, and the Brain's
+neighborhood query.
+"""
+
+import sys
+import tempfile
+import unittest
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from PIL import Image, ImageDraw
+
+from memoryvault import config, db
+
+
+def make_photo(path: Path, seed: int = 0, size=(400, 300)):
+    img = Image.new("RGB", size, (40 + seed * 13 % 200, 80, 120))
+    d = ImageDraw.Draw(img)
+    d.ellipse([50 + seed * 5, 50, 200 + seed * 5, 200], fill=(220, 180, 60))
+    d.rectangle([250, 100, 380, 280], fill=(60, 160, 220))
+    img.save(path, "JPEG", quality=90)
+
+
+class PipelineTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-test-"))
+        self.src = self.tmp / "source"
+        self.src.mkdir()
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        config.VAULT_MOUNT = self.tmp / "vault-mount"
+        self.conn = db.init(config.DB_PATH)
+
+    def _discover_ingest(self):
+        from memoryvault.discover import discover
+        from memoryvault.ingest import ingest
+
+        discover(self.conn, self.src)
+        return ingest(self.conn)
+
+    def test_video_ingest_makes_row_and_poster(self):
+        import shutil as _sh
+        import subprocess
+        if not _sh.which("ffmpeg") or not _sh.which("ffprobe"):
+            self.skipTest("ffmpeg not available")
+        vid = self.src / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-y", "-f", "lavfi",
+             "-i", "testsrc=duration=2:size=320x240:rate=10",
+             "-movflags", "+faststart", str(vid)],
+            capture_output=True, check=True)
+        stats = self._discover_ingest()
+        self.assertEqual(stats["canonical"], 1)
+        row = self.conn.execute(
+            "SELECT media_kind, duration, library_path, sha256 FROM photos"
+        ).fetchone()
+        self.assertEqual(row["media_kind"], "video")
+        self.assertGreater(row["duration"], 0)
+        from memoryvault import video
+        self.assertTrue(video.poster_path(row["sha256"]).exists())
+
+    def test_ingest_and_exact_dup(self):
+        make_photo(self.src / "a.jpg", seed=1)
+        make_photo(self.src / "b.jpg", seed=2)
+        # exact duplicate: same bytes, different name/folder
+        (self.src / "sub").mkdir()
+        (self.src / "sub" / "a_copy.jpg").write_bytes(
+            (self.src / "a.jpg").read_bytes()
+        )
+        stats = self._discover_ingest()
+        self.assertEqual(stats["canonical"], 2)
+        self.assertEqual(stats["duplicate"], 1)
+        # identity is sha256: same-stem files from different dirs don't collide
+        photos = self.conn.execute("SELECT * FROM photos").fetchall()
+        self.assertEqual(len(photos), 2)
+        for p in photos:
+            self.assertTrue((config.LIBRARY_ROOT / p["library_path"]).exists())
+            thumb = config.LIBRARY_ROOT / "thumbnails" / f"{p['sha256'][:16]}.jpg"
+            self.assertTrue(thumb.exists())
+        # source untouched
+        self.assertTrue((self.src / "a.jpg").exists())
+
+    def test_near_dup_clusters_resized_copy(self):
+        from memoryvault.dedup import dedup
+
+        make_photo(self.src / "orig.jpg", seed=3, size=(800, 600))
+        with Image.open(self.src / "orig.jpg") as img:
+            img.resize((400, 300)).save(self.src / "small.jpg", "JPEG", quality=70)
+        make_photo(self.src / "other.jpg", seed=40)
+        self._discover_ingest()
+        stats = dedup(self.conn, quarantine=True)
+        self.assertEqual(stats["near_groups"], 1)
+        self.assertEqual(stats["quarantined"], 1)
+        # keeper is the higher-resolution one
+        g = self.conn.execute("SELECT * FROM duplicate_groups").fetchone()
+        keeper = self.conn.execute(
+            "SELECT width FROM photos WHERE id = ?", (g["keeper_photo_id"],)
+        ).fetchone()
+        self.assertEqual(keeper["width"], 800)
+        # loser moved to duplicates/, decision pending — nothing deleted
+        pending = self.conn.execute(
+            "SELECT COUNT(*) c FROM duplicate_members WHERE decision='pending'"
+        ).fetchone()["c"]
+        self.assertEqual(pending, 1)
+
+    def test_screening_verdicts_and_failsafe(self):
+        from memoryvault.screen import screen_verdict, ScreenError, SAFE, VAULT, REVIEW, ERROR
+
+        def confirm_yes(p):
+            return True
+
+        def confirm_no(p):
+            return False
+
+        def confirm_boom(p):
+            raise ScreenError("ollama down")
+
+        def score(v):
+            return lambda p: v
+
+        def score_boom(p):
+            raise ScreenError("classifier missing")
+
+        # low score → safe without pass 2 (t_low default is 0.05 now)
+        self.assertEqual(screen_verdict("x", score(0.01), confirm_boom)[0], SAFE)
+        # flagged + confirmed → vault
+        self.assertEqual(screen_verdict("x", score(0.6), confirm_yes)[0], VAULT)
+        # flagged, VLM disagrees, mid score → safe
+        self.assertEqual(screen_verdict("x", score(0.5), confirm_no)[0], SAFE)
+        # hard disagreement → human review
+        self.assertEqual(screen_verdict("x", score(0.95), confirm_no)[0], REVIEW)
+        # THE fail-safe: any error is ERROR, never a quarantine verdict
+        self.assertEqual(screen_verdict("x", score_boom, confirm_yes)[0], ERROR)
+        self.assertEqual(screen_verdict("x", score(0.6), confirm_boom)[0], ERROR)
+
+    def test_screen_halts_without_vault_and_scrubs_with_it(self):
+        from memoryvault import vault
+        from memoryvault.screen import screen
+
+        make_photo(self.src / "p1.jpg", seed=5)
+        make_photo(self.src / "p2.jpg", seed=60)
+        self._discover_ingest()
+
+        # vault not mounted → the batch must refuse to start
+        with self.assertRaises(vault.VaultUnavailable):
+            screen(self.conn, score_fn=lambda p: 0.0, confirm_fn=lambda p: False)
+
+        # simulate a mounted vault (plain dir + patched check for the test)
+        config.VAULT_MOUNT.mkdir(parents=True)
+        orig = vault.is_mounted
+        vault.is_mounted = lambda: True
+        try:
+            import memoryvault.screen as screen_mod
+
+            stats = screen(
+                self.conn,
+                score_fn=lambda p: 0.99,
+                confirm_fn=lambda p: True,
+            )
+        finally:
+            vault.is_mounted = orig
+        self.assertEqual(stats["vault"], 2)
+        # invariant #3: zero trace in the DB, files inside the vault, thumbs gone
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"], 0
+        )
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM files").fetchone()["c"], 0
+        )
+        self.assertEqual(len(list(config.VAULT_MOUNT.iterdir())), 2)
+        thumbs = list((config.LIBRARY_ROOT / "thumbnails").glob("*.jpg"))
+        self.assertEqual(thumbs, [])
+        funnel = db.funnel(self.conn)
+        self.assertEqual(funnel["vaulted_total"], 2)
+
+    def test_tag_stores_rows_and_exif_year_wins(self):
+        from memoryvault.tag import tag
+
+        make_photo(self.src / "t.jpg", seed=7)
+        self._discover_ingest()
+        self.conn.execute(
+            "UPDATE photos SET status='screened', taken_at='2019-06-01T12:00:00'"
+        )
+        fake = {"people": ["Alex"], "occasion": "Birthday", "year": "2024"}
+        stats = tag(self.conn, vision_fn=lambda p, prompt, fmt=None: fake)
+        self.assertEqual(stats["tagged"], 1)
+        year = self.conn.execute(
+            "SELECT value FROM tags WHERE dimension='year'"
+        ).fetchone()["value"]
+        self.assertEqual(year, "2019")  # EXIF beats model guess
+
+    def test_edges_and_neighborhood(self):
+        from memoryvault.tag import tag
+        from memoryvault.edges import compute_edges
+        from memoryvault.constellation.server import ConstellationDB
+
+        for i in range(4):
+            make_photo(self.src / f"e{i}.jpg", seed=100 + i * 17)
+        self._discover_ingest()
+        self.conn.execute("UPDATE photos SET status='screened'")
+        people = [["Alex"], ["Alex"], ["Bailey"], ["Alex", "Bailey"]]
+        rows = self.conn.execute("SELECT id FROM photos ORDER BY id").fetchall()
+        for row, ppl in zip(rows, people):
+            self.conn.execute(
+                "UPDATE photos SET taken_at=? WHERE id=?",
+                (datetime(2020, 5, 17, 10).isoformat(), row["id"]),
+            )
+            from memoryvault.tag import store_tags, load_schema
+
+            store_tags(self.conn, row["id"], {"location": "Beach"},
+                       load_schema(), None)
+            # people tags come from face recognition (schema v2), not vision
+            for name in ppl:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO tags(photo_id, dimension, value, "
+                    "model_version) VALUES (?, 'people', ?, 'faces-1.0')",
+                    (row["id"], name),
+                )
+            self.conn.execute(
+                "UPDATE photos SET status='tagged' WHERE id=?", (row["id"],)
+            )
+        self.conn.commit()
+        stats = compute_edges(self.conn)
+        self.assertGreater(stats["edges"], 0)
+
+        bdb = ConstellationDB(config.DB_PATH)
+        n = bdb.neighborhood(self.conn, rows[0]["id"], k=8)
+        self.assertEqual(n["focus"], rows[0]["id"])
+        self.assertGreaterEqual(len(n["nodes"]), 2)
+        relations = {e["relation"] for e in n["edges"]}
+        self.assertIn("same-person", relations)
+
+    def test_notes_generation_preserves_manual_block(self):
+        from memoryvault.notes import generate
+
+        config.MEMORYVAULT_ROOT = self.tmp / "obsidian"
+        make_photo(self.src / "n.jpg", seed=9)
+        self._discover_ingest()
+        row = self.conn.execute("SELECT id FROM photos").fetchone()
+        self.conn.execute(
+            "UPDATE photos SET status='tagged', taken_at='2021-03-04T09:00:00'"
+        )
+        self.conn.execute(
+            "INSERT INTO tags(photo_id, dimension, value, model_version) "
+            "VALUES (?, 'people', 'Alex', 'test')",
+            (row["id"],),
+        )
+        stats = generate(self.conn)
+        self.assertEqual(stats["notes"], 1)
+        note = next((config.MEMORYVAULT_ROOT / "Photos" / "2021").glob("*.md"))
+        content = note.read_text()
+        self.assertIn("[[People/Alex|Alex]]", content)
+        # add a manual annotation, regenerate, verify it survives
+        note.write_text(
+            content.replace(
+                "<!-- manual -->\n<!-- /manual -->",
+                "<!-- manual -->\nthe day we got the dog\n<!-- /manual -->",
+            )
+        )
+        generate(self.conn)
+        self.assertIn("the day we got the dog", note.read_text())
+        index = (config.MEMORYVAULT_ROOT / "People" / "Alex.md").read_text()
+        self.assertIn("2021", index)
+
+
+    def test_calibrate_sweep_and_recommendation(self):
+        from memoryvault.calibrate import sweep, recommend
+
+        safe = [0.01, 0.05, 0.1, 0.3, 0.02]      # one awkward safe photo at 0.3
+        flagged = [0.6, 0.9, 0.45, 0.99]
+        rows = sweep(safe, flagged)
+        rec = recommend(rows, target_recall=0.99)
+        self.assertIsNotNone(rec)
+        # highest threshold still catching all flagged (min flagged = 0.45)
+        self.assertLessEqual(rec["threshold"], 0.45)
+        self.assertEqual(rec["recall"], 1.0)
+        # impossible target when a flagged item scores below every threshold
+        rows2 = sweep(safe, [0.01])
+        self.assertIsNone(recommend(rows2, target_recall=0.99))
+
+    def test_migrate_quarantine_moves_and_removes(self):
+        from memoryvault import vault
+        from memoryvault.migrate import migrate_quarantine
+
+        qdir = self.tmp / "Quarantine"
+        qdir.mkdir()
+        make_photo(qdir / "private1.jpg", seed=21)
+        make_photo(qdir / "private2.jpg", seed=22)
+        config.VAULT_MOUNT.mkdir(parents=True)
+        orig = vault.is_mounted
+        vault.is_mounted = lambda: True
+        try:
+            stats = migrate_quarantine(qdir)
+        finally:
+            vault.is_mounted = orig
+        self.assertEqual(stats["moved"], 2)
+        self.assertFalse(qdir.exists())  # emptied and removed
+        self.assertEqual(len(list(config.VAULT_MOUNT.glob("*.jpg"))), 2)
+
+
+class TestPlacards(unittest.TestCase):
+    def test_render_forms_the_label(self):
+        from memoryvault.placards import render
+
+        self.assertEqual(render("Joy, Unsupervised", "the artist, backyard, 2019"),
+                         "«Joy, Unsupervised» — the artist, backyard, 2019")
+        # stray quotes and whitespace are stripped, empty title degrades cleanly
+        self.assertEqual(render('"Bath  Time"', " a small collaborator "),
+                         "«Bath Time» — a small collaborator")
+        self.assertEqual(render("", "just the line"), "just the line")
+
+    def test_build_prompt_carries_only_present_facts(self):
+        from memoryvault.placards import build_prompt
+
+        p = build_prompt({"people": ["Bailey"], "date": "2019-07-04",
+                          "scene": "a boy eating a popsicle"})
+        self.assertIn("people: Bailey", p)
+        self.assertIn("date: 2019-07-04", p)
+        self.assertIn("popsicle", p)
+        self.assertNotIn("occasion:", p)
+
+    def test_photo_facts_skips_filler_tags(self):
+        import sqlite3
+
+        from memoryvault.placards import photo_facts
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE photos (id INTEGER PRIMARY KEY, taken_at TEXT)")
+        conn.execute("CREATE TABLE tags (photo_id INTEGER, dimension TEXT, value TEXT)")
+        conn.execute("CREATE TABLE descriptions (photo_id INTEGER PRIMARY KEY, caption TEXT)")
+        conn.execute("INSERT INTO photos VALUES (1, '2019-07-04 12:00:00')")
+        conn.executemany("INSERT INTO tags VALUES (1, ?, ?)", [
+            ("people", "Bailey"), ("people", "Solo"), ("pets", "No Pets"),
+            ("occasion", "Birthday"), ("curation", "Kept")])
+        conn.execute("INSERT INTO descriptions VALUES (1, 'cake everywhere')")
+        f = photo_facts(conn, 1)
+        self.assertEqual(f["people"], ["Bailey"])       # filler 'Solo' dropped
+        self.assertNotIn("pets", f)                     # 'No Pets' dropped
+        self.assertEqual(f["occasion"], ["Birthday"])
+        self.assertNotIn("curation", f)                 # not a fact dimension
+        self.assertEqual(f["date"], "2019-07-04")
+        self.assertEqual(f["scene"], "cake everywhere")
+
+
+class RetryLoopTest(unittest.TestCase):
+    """A file that can never be read must stop costing a run every night."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-retry-"))
+        self.src = self.tmp / "source"
+        self.src.mkdir()
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        self.conn = db.init(config.DB_PATH)
+
+    def _ingest(self):
+        from memoryvault.discover import discover
+        from memoryvault.ingest import ingest
+
+        discover(self.conn, self.src)
+        return ingest(self.conn)
+
+    def test_unreadable_file_is_dead_lettered_then_released(self):
+        from memoryvault.ingest import MAX_ATTEMPTS, release_dead_letters
+
+        # a real source file whose bytes are not an image — the shape of all
+        # 431 files the hub re-tried nightly (empty copies, truncated JPEGs)
+        (self.src / "broken.jpg").write_bytes(b"")
+        make_photo(self.src / "good.jpg", seed=7)
+
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            stats = self._ingest()
+            self.assertEqual(stats["errors"], 1, f"attempt {attempt}")
+            row = self.conn.execute(
+                "SELECT retry_count FROM errors WHERE resolved = 0"
+            ).fetchall()
+            self.assertEqual(len(row), 1, "one open row per broken file, not one per run")
+            self.assertEqual(row[0]["retry_count"], attempt)
+        self.assertEqual(stats["failed"], 1)
+
+        # the good photo landed, the broken one is out of the queue
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT disposition FROM files WHERE source_path LIKE '%broken%'"
+            ).fetchone()["disposition"], "failed")
+
+        # ...and the next run does no work at all on it
+        again = self._ingest()
+        self.assertEqual(again["errors"], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT retry_count FROM errors WHERE resolved = 0"
+            ).fetchone()["retry_count"], MAX_ATTEMPTS)
+
+        # retry is the way back: released, and it errors again rather than
+        # being silently skipped forever
+        self.assertEqual(release_dead_letters(self.conn), 1)
+        self.conn.execute("UPDATE errors SET resolved = 1 WHERE resolved = 0")
+        self.assertEqual(self._ingest()["errors"], 1)
+
+    def test_legacy_error_history_collapses_and_carries_the_count(self):
+        for _ in range(35):  # 35 nights of the same failure, pre-fix shape
+            self.conn.execute(
+                "INSERT INTO errors(stage, source_path, error, last_attempt) "
+                "VALUES ('ingest', '/src/x.jpg', 'boom', '2026-07-01T04:30:00')")
+        self.conn.execute(
+            "INSERT INTO errors(stage, photo_id, error, last_attempt) "
+            "VALUES ('tag', 12, 'other target', '2026-07-01T04:30:00')")
+        self.conn.execute("DELETE FROM schema_meta WHERE key = 'errors_collapsed'")
+        self.conn.commit()
+
+        db._collapse_error_history(self.conn)
+
+        rows = self.conn.execute(
+            "SELECT stage, retry_count FROM errors ORDER BY stage").fetchall()
+        self.assertEqual(len(rows), 2)  # one per target, not per attempt
+        self.assertEqual(rows[0]["stage"], "ingest")
+        self.assertEqual(rows[0]["retry_count"], 35)
+        self.assertEqual(rows[1]["retry_count"], 1)
+
+        # a target already past its budget is retired on the next ingest,
+        # without spending three more nights re-proving it
+        self.conn.execute(
+            "INSERT INTO sources(kind, root) VALUES ('dir', '/src')")
+        self.conn.execute(
+            "INSERT INTO files(source_id, source_path, media_kind, disposition, "
+            "discovered_at) VALUES (1, '/src/x.jpg', 'photo', 'discovered', 'x')")
+        self.conn.commit()
+        from memoryvault.ingest import ingest
+
+        self.assertEqual(ingest(self.conn)["failed"], 1)
+
+
+class EdgeBoundsTest(unittest.TestCase):
+    """compute_edges must stay linear in the library size — the all-pairs
+    version has quadratic memory growth."""
+
+    N = 200  # 200 photos sharing one tag = 19,900 pairs the old way
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-edges-"))
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        self.conn = db.init(config.DB_PATH)
+        for i in range(self.N):
+            pid = self.conn.execute(
+                "INSERT INTO photos(sha256, taken_at, status, created_at) "
+                "VALUES (?,?, 'tagged', '2026-01-01')",
+                (f"{i:064x}", f"2020-05-{1 + i % 28:02d}T{i % 24:02d}:00:00"),
+            ).lastrowid
+            self.conn.execute(
+                "INSERT INTO tags(photo_id, dimension, value, model_version) "
+                "VALUES (?, 'people', 'Everyone', 'faces-1.0')", (pid,))
+        self.conn.commit()
+
+    def test_pairs_are_capped_per_photo_and_nobody_is_stranded(self):
+        from memoryvault.edges import GROUP_FANOUT, TOP_K, compute_edges
+
+        stats = compute_edges(self.conn)
+        all_pairs = self.N * (self.N - 1) // 2
+        self.assertLess(stats["raw_pairs"], all_pairs // 4,
+                        "raw pairs must not scale with n²")
+        self.assertLessEqual(stats["raw_pairs"], GROUP_FANOUT * self.N * len(
+            {"same-person", "same-event", "near-time"}))
+
+        # bounded, but every photo still has a way in and out
+        linked = self.conn.execute(
+            "SELECT COUNT(DISTINCT id) c FROM (SELECT photo_id_a AS id FROM "
+            "photo_edges UNION SELECT photo_id_b FROM photo_edges)"
+        ).fetchone()["c"]
+        self.assertEqual(linked, self.N)
+        # a node's degree can exceed TOP_K — the prune keeps the union of each
+        # node's own top-K, so a popular photo gets adopted by its neighbours.
+        # What must hold is the generation bound: fanout forward + fanout back.
+        widest = self.conn.execute(
+            "SELECT MAX(c) m FROM (SELECT COUNT(*) c FROM (SELECT photo_id_a AS id, "
+            "relation FROM photo_edges UNION ALL SELECT photo_id_b, relation "
+            "FROM photo_edges) GROUP BY id, relation)").fetchone()["m"]
+        self.assertLessEqual(widest, 2 * GROUP_FANOUT)
+        self.assertGreaterEqual(widest, TOP_K)  # not a starved graph either
+
+    def test_neighbours_are_the_ones_next_in_time(self):
+        from memoryvault.edges import compute_edges
+
+        compute_edges(self.conn)
+        # photos were dated by i % 28 — the same-day cluster is what a photo
+        # should be tied to, not an arbitrary 200-way tie broken by rowid
+        same_day = self.conn.execute(
+            "SELECT COUNT(*) c FROM photo_edges e "
+            "JOIN photos a ON a.id = e.photo_id_a "
+            "JOIN photos b ON b.id = e.photo_id_b "
+            "WHERE e.relation = 'same-event' "
+            "AND substr(a.taken_at,1,10) = substr(b.taken_at,1,10)"
+        ).fetchone()["c"]
+        total_event = self.conn.execute(
+            "SELECT COUNT(*) c FROM photo_edges WHERE relation='same-event'"
+        ).fetchone()["c"]
+        self.assertEqual(same_day, total_event)
+        self.assertGreater(total_event, 0)
+
+
+class PhashSweepTest(unittest.TestCase):
+    """The packed popcount sweep replaced pigeonhole bucketing; it has to give
+    the same answers imagehash's own subtraction does."""
+
+    def _hashes(self, n=120):
+        import imagehash
+        import numpy as np
+
+        rng = np.random.default_rng(1234)
+        return {
+            i: imagehash.ImageHash(rng.integers(0, 2, (8, 8)).astype(bool))
+            for i in range(1, n + 1)
+        }
+
+    def test_pairs_within_matches_brute_force(self):
+        from memoryvault.dedup import pairs_within
+
+        h = self._hashes()
+        expect = {
+            (a, b) for a in h for b in h if a < b and h[a] - h[b] <= 22
+        }
+        self.assertEqual(set(pairs_within(h, 22)), expect)
+        self.assertNotEqual(expect, set())
+
+    def test_nearest_neighbors_are_the_true_k_closest_in_band(self):
+        from memoryvault.dedup import nearest_neighbors
+
+        h = self._hashes()
+        lo, hi, k = 10, 22, 8
+        got = defaultdict(list)
+        for a, b, d in nearest_neighbors(h, lo=lo, hi=hi, k=k):
+            self.assertTrue(lo < d <= hi)
+            self.assertEqual(d, h[a] - h[b])
+            got[a].append(d)
+        for a, dists in got.items():
+            self.assertLessEqual(len(dists), k)
+            in_band = sorted(
+                h[a] - h[b] for b in h if b != a and lo < h[a] - h[b] <= hi)
+            self.assertEqual(sorted(dists), in_band[:len(dists)])
+            self.assertEqual(len(dists), min(k, len(in_band)))
+
+    def test_empty_and_single_photo_libraries_do_not_explode(self):
+        from memoryvault.dedup import nearest_neighbors, pairs_within
+
+        one = {k: v for k, v in list(self._hashes(1).items())}
+        for hashes in ({}, one):
+            self.assertEqual(list(pairs_within(hashes, 22)), [])
+            self.assertEqual(list(nearest_neighbors(hashes, 10, 22, 8)), [])
+
+
+class VaultModeTest(unittest.TestCase):
+    """MEMORYVAULT_VAULT_MODE=dir has to actually be honoured.
+
+    It was read into config and then consulted nowhere: is_mounted() was just
+    os.path.ismount(), and a plain directory is never a mountpoint. So every
+    dir-mode install (Docker, Windows, the setup wizard's default) failed
+    screening, no photo reached 'screened', and `tag` — which only takes
+    screened photos — never ran. The star map stayed empty forever.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-vault-"))
+        self._mode, self._mount = config.VAULT_MODE, config.VAULT_MOUNT
+        config.VAULT_MOUNT = self.tmp / "vault"
+
+    def tearDown(self):
+        config.VAULT_MODE, config.VAULT_MOUNT = self._mode, self._mount
+
+    def test_dir_mode_is_available_and_creates_its_subfolders(self):
+        from memoryvault import vault
+
+        config.VAULT_MODE = "dir"
+        self.assertFalse(config.VAULT_MOUNT.exists())
+        self.assertTrue(vault.is_mounted(), "dir mode must be available")
+        for sub in vault.VAULT_SUBDIRS:
+            if not sub:
+                continue
+            self.assertTrue((config.VAULT_MOUNT / sub).is_dir(), f"{sub} missing")
+
+    def test_luks_mode_still_refuses_a_plain_directory(self):
+        # the safety property: a bare dir must never pass as a LUKS vault, or
+        # flagged photos would be written out in plaintext.
+        from memoryvault import vault
+
+        config.VAULT_MODE = "luks"
+        config.VAULT_MOUNT.mkdir(parents=True, exist_ok=True)
+        self.assertFalse(vault.is_mounted(),
+                         "a plain directory must not count as a mounted vault")
+
+    def test_dir_mode_is_idempotent(self):
+        from memoryvault import vault
+
+        config.VAULT_MODE = "dir"
+        self.assertTrue(vault.is_mounted())
+        self.assertTrue(vault.is_mounted())
+
+    def test_dir_mode_reports_unavailable_if_it_cannot_create(self):
+        from memoryvault import vault
+
+        config.VAULT_MODE = "dir"
+        blocker = self.tmp / "blocker"
+        blocker.write_text("not a directory")
+        config.VAULT_MOUNT = blocker
+        self.assertFalse(vault.is_mounted())
+
+
+class FreshLibraryTest(unittest.TestCase):
+    """A library where `faces scan` has never run — i.e. every new install.
+
+    The face tables used to be created lazily by faces.ensure_schema(), but
+    curate.py, vault.py and the Constellation server all read them, so on a
+    brand-new library those readers died with "no such table: faces". The
+    setup wizard hit this on its very first curate pass.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="mv-fresh-"))
+        config.LIBRARY_ROOT = self.tmp / "library"
+        config.DB_PATH = config.LIBRARY_ROOT / "photos.db"
+        self.conn = db.init(config.DB_PATH)
+
+    def _tables(self):
+        return {r["name"] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+    def test_face_tables_exist_before_any_face_scan(self):
+        for t in ("faces", "face_clusters", "face_bans"):
+            self.assertIn(t, self._tables(), f"{t} missing on a fresh library")
+
+    def test_photos_has_faces_scanned_column(self):
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(photos)")}
+        self.assertIn("faces_scanned", cols)
+
+    def test_curate_runs_on_a_library_with_no_faces(self):
+        from memoryvault.curate import curate
+
+        # A cameraless photo at screen dimensions is the one shape that makes
+        # curate consult the faces table ("is this a screenshot, or a photo of
+        # people?"). 800x600 is in _SCREEN_DIMS — and is what a phone export
+        # or a resized JPEG commonly looks like, so a fresh install hits it
+        # immediately.
+        self.conn.execute(
+            "INSERT INTO photos (id, sha256, library_path, width, height, "
+            "camera, status, created_at) VALUES (1, 'deadbeef', 'a.jpg', "
+            "800, 600, NULL, 'canonical', ?)", (db.now(),))
+        self.conn.commit()
+        curate(self.conn)          # used to raise sqlite3.OperationalError
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM tags WHERE photo_id = 1 AND dimension = 'curation'"
+        ).fetchone(), "curate reached the faces branch and tagged the photo")
+
+    def test_face_readers_query_cleanly(self):
+        # the shapes curate/vault/server use, against the empty tables
+        self.conn.execute(
+            "SELECT 1 FROM faces WHERE photo_id = ? LIMIT 1", (1,)).fetchone()
+        self.conn.execute(
+            "SELECT photo_id FROM faces GROUP BY photo_id").fetchall()
+        self.conn.execute(
+            "SELECT f.id FROM faces f JOIN face_clusters c "
+            "ON c.id = f.cluster_id").fetchall()
+
+    def test_faces_ensure_schema_is_still_idempotent(self):
+        # db.py now creates them; faces.py must not fight it
+        from memoryvault import faces
+
+        faces.ensure_schema(self.conn)
+        faces.ensure_schema(self.conn)
+        for t in ("faces", "face_clusters", "face_bans"):
+            self.assertIn(t, self._tables())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

@@ -1,0 +1,351 @@
+"""Stage 2 — Ingest. Copy to staging, hash, EXIF, then move
+into originals/. Source files are never modified. Identity is sha256."""
+
+import hashlib
+import shutil
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+
+from PIL import Image, ImageOps
+import imagehash
+
+from . import config
+from .db import now, record_error, start_run, finish_run
+
+# attempts before a file is dead-lettered (disposition='failed') instead of
+# being re-read by every nightly run. Some sources hold bytes that will never
+# be an image — zero-length copies, truncated JPEGs, thumbnail caches — and
+# retrying them forever buries real errors. `mvault retry` releases them.
+MAX_ATTEMPTS = 3
+
+EXIF_IFD = 0x8769
+GPS_IFD = 0x8825
+TAG_DATETIME_ORIGINAL = 36867
+TAG_DATETIME = 306
+TAG_MODEL = 272
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _gps_to_deg(values, ref) -> float | None:
+    try:
+        d, m, s = (float(v) for v in values)
+        deg = d + m / 60 + s / 3600
+        return -deg if ref in ("S", "W") else deg
+    except Exception:
+        return None
+
+
+def extract_exif(img: Image.Image) -> dict:
+    out = {"taken_at": None, "camera": None, "gps_lat": None, "gps_lon": None}
+    try:
+        exif = img.getexif()
+        raw_dt = None
+        try:
+            raw_dt = exif.get_ifd(EXIF_IFD).get(TAG_DATETIME_ORIGINAL)
+        except Exception:
+            pass
+        raw_dt = raw_dt or exif.get(TAG_DATETIME)
+        if raw_dt:
+            try:
+                out["taken_at"] = datetime.strptime(
+                    str(raw_dt), "%Y:%m:%d %H:%M:%S"
+                ).isoformat()
+            except ValueError:
+                pass
+        model = exif.get(TAG_MODEL)
+        if model:
+            out["camera"] = str(model).strip()
+        try:
+            gps = exif.get_ifd(GPS_IFD)
+            if gps:
+                lat = _gps_to_deg(gps.get(2, ()), gps.get(1))
+                lon = _gps_to_deg(gps.get(4, ()), gps.get(3))
+                out["gps_lat"], out["gps_lon"] = lat, lon
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return out
+
+
+def library_dest(sha256: str, source_path: Path, taken_at: str | None) -> Path:
+    if taken_at:
+        year, month = taken_at[0:4], taken_at[5:7]
+    else:
+        year, month = "unknown", "00"
+    name = f"{sha256[:8]}-{source_path.name}"
+    return config.LIBRARY_ROOT / "originals" / year / month / name
+
+
+def make_thumbnail(img: Image.Image, sha256: str) -> None:
+    thumb_dir = config.LIBRARY_ROOT / "thumbnails"
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    # bake the EXIF orientation into pixels — the tag is stripped on save,
+    # so without this every portrait phone shot renders sideways
+    t = ImageOps.exif_transpose(img)
+    t.thumbnail((512, 512))
+    t.convert("RGB").save(thumb_dir / f"{sha256[:16]}.jpg", "JPEG", quality=85)
+
+
+def ingest_one(conn, file_row) -> str:
+    """Process one discovered file row. Returns disposition set."""
+    from . import formats
+
+    src = Path(file_row["source_path"])
+    size = file_row["size"] if "size" in file_row.keys() else None
+    if size is None:
+        try:
+            size = src.stat().st_size
+        except OSError:
+            size = None
+    if size is not None and formats.too_large(size):
+        # checked BEFORE hashing: reading a 20 GB file to hash it is the cost
+        # the cap exists to avoid
+        record_error(conn, "ingest", formats.too_large_message(src, size),
+                     source_path=src)
+        conn.execute("UPDATE files SET disposition = 'too-large' WHERE id = ?",
+                     (file_row["id"],))
+        return "too_large"
+    sha = sha256_file(src)
+
+    # never resurrect a photo the family removed: vaulted shas live only in
+    # the encrypted vault, purged shas are gone forever — a source copy that
+    # survives on a backup mirror or USB drive must not re-enter the library
+    for ledger in ("vaulted", "purged"):
+        try:
+            gone = conn.execute(
+                f"SELECT 1 FROM {ledger} WHERE sha256 = ?", (sha,)).fetchone()
+        except sqlite3.OperationalError:
+            gone = None                      # ledger table not created yet
+        if gone:
+            conn.execute(
+                "UPDATE files SET disposition = ? WHERE id = ?",
+                (ledger, file_row["id"]),
+            )
+            return ledger
+
+    existing = conn.execute(
+        "SELECT id FROM photos WHERE sha256 = ?", (sha,)
+    ).fetchone()
+    if existing:
+        # exact duplicate seen elsewhere: the files row IS the record (SPEC §5.3)
+        conn.execute(
+            "UPDATE files SET photo_id = ?, disposition = 'duplicate' WHERE id = ?",
+            (existing["id"], file_row["id"]),
+        )
+        return "duplicate"
+
+    if file_row["media_kind"] == "video":
+        return _ingest_video(conn, file_row, src, sha)
+
+    kind = formats.kind_of(src)
+    if kind == "raw":
+        return _ingest_raw(conn, file_row, src, sha)
+
+    staging = config.LIBRARY_ROOT / "staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    staged = staging / f"{sha[:16]}-{src.name}"
+    shutil.copy2(src, staged)
+
+    rendition = None
+    try:
+        if kind == "heic":
+            # the working file every later stage reads; the HEIC itself is
+            # kept untouched alongside it in originals/
+            rendition = staging / f"{sha[:16]}-{src.stem}.jpg"
+            formats.heic_to_jpeg(staged, rendition)
+        work = rendition or staged
+        with Image.open(work) as img:
+            width, height = img.size
+            phash = str(imagehash.phash(img))
+            make_thumbnail(img, sha)
+        # EXIF comes from the ORIGINAL: it's the authority, whatever the
+        # rendition kept
+        with Image.open(staged) as orig:
+            exif = extract_exif(orig)
+    except Exception:
+        staged.unlink(missing_ok=True)
+        if rendition:
+            rendition.unlink(missing_ok=True)
+        raise
+
+    dest = library_dest(sha, src, exif["taken_at"])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(staged), str(dest))
+    library_file = dest
+    if rendition:
+        library_file = config.LIBRARY_ROOT / "renditions" / dest.relative_to(
+            config.LIBRARY_ROOT / "originals").with_suffix(".jpg")
+        library_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(rendition), str(library_file))
+
+    cur = conn.execute(
+        "INSERT INTO photos(sha256, phash, width, height, taken_at, camera, "
+        "gps_lat, gps_lon, media_kind, status, library_path, original_path, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?, 'photo', 'staged', ?, ?, ?)",
+        (
+            sha, phash, width, height, exif["taken_at"], exif["camera"],
+            exif["gps_lat"], exif["gps_lon"],
+            str(library_file.relative_to(config.LIBRARY_ROOT)),
+            str(dest.relative_to(config.LIBRARY_ROOT)), now(),
+        ),
+    )
+    conn.execute(
+        "UPDATE files SET photo_id = ?, disposition = 'canonical' WHERE id = ?",
+        (cur.lastrowid, file_row["id"]),
+    )
+    return "canonical"
+
+
+def _ingest_raw(conn, file_row, src: Path, sha: str) -> str:
+    """RAW is archive-only (spec B5): kept safe, never in the family stream,
+    never screened or tagged. The row is status='archived' so no stage and no
+    display query ever selects it."""
+    from . import formats
+
+    exif = formats.raw_exif(src)
+    year = exif["taken_at"][0:4] if exif["taken_at"] else "unknown"
+    dest = config.LIBRARY_ROOT / "archive" / "raw" / year / f"{sha[:8]}-{src.name}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    cur = conn.execute(
+        "INSERT INTO photos(sha256, phash, width, height, taken_at, camera, "
+        "gps_lat, gps_lon, media_kind, status, library_path, original_path, created_at) "
+        "VALUES (?, NULL, NULL, NULL, ?, ?, ?, ?, 'raw', 'archived', NULL, ?, ?)",
+        (sha, exif["taken_at"], exif["camera"], exif["gps_lat"], exif["gps_lon"],
+         str(dest.relative_to(config.LIBRARY_ROOT)), now()),
+    )
+    conn.execute(
+        "UPDATE files SET photo_id = ?, disposition = 'archived' WHERE id = ?",
+        (cur.lastrowid, file_row["id"]),
+    )
+    return "archived"
+
+
+def _ingest_video(conn, file_row, src: Path, sha: str) -> str:
+    """A video becomes a photos row (media_kind='video') with a poster frame
+    as its display rendition + thumbnail. The original is copied into the
+    library like a photo; downstream stages read the poster via
+    video.representative_image()."""
+    from . import video as vid
+
+    dest = library_dest(sha, src, None)  # refined below once we know taken_at
+    meta = vid.probe(str(src))
+    if meta.get("live_photo"):
+        # the motion half of a Live Photo — the still is ingested on its own,
+        # so don't clutter the library with a ~3s "video"
+        conn.execute("UPDATE files SET disposition = 'live-photo' WHERE id = ?",
+                     (file_row["id"],))
+        return "live_photo"
+    if meta["taken_at"]:
+        dest = library_dest(sha, src, meta["taken_at"])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+    poster = vid.make_poster(str(dest), sha, meta["duration"])
+    if poster is None:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError("poster-frame extraction failed (ffmpeg?)")
+    # thumbnail from the poster (same 512px treatment photos get)
+    with Image.open(poster) as pim:
+        make_thumbnail(pim, sha)
+
+    cur = conn.execute(
+        "INSERT INTO photos(sha256, phash, width, height, taken_at, camera, "
+        "gps_lat, gps_lon, media_kind, status, library_path, duration, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?, 'video', 'staged', ?, ?, ?)",
+        (
+            sha, None, meta["width"], meta["height"], meta["taken_at"], None,
+            meta["gps_lat"], meta["gps_lon"],
+            str(dest.relative_to(config.LIBRARY_ROOT)), meta["duration"], now(),
+        ),
+    )
+    conn.execute(
+        "UPDATE files SET photo_id = ?, disposition = 'canonical' WHERE id = ?",
+        (cur.lastrowid, file_row["id"]),
+    )
+    return "canonical"
+
+
+def _dead_letter(conn, file_id: int, source_path: str) -> None:
+    conn.execute(
+        "UPDATE files SET disposition = 'failed' WHERE id = ?", (file_id,)
+    )
+    print(f"  gave up after {MAX_ATTEMPTS} attempts: {source_path}")
+
+
+def release_dead_letters(conn) -> int:
+    """Put every dead-lettered file back in the ingest queue (see cmd_retry)."""
+    return conn.execute(
+        "UPDATE files SET disposition = 'discovered' WHERE disposition = 'failed'"
+    ).rowcount
+
+
+def _dead_letter_exhausted(conn) -> int:
+    """Retire files that already burned through their attempts in earlier runs
+    (their history predates the retry_count, or they failed before this run)."""
+    cur = conn.execute(
+        "UPDATE files SET disposition = 'failed' WHERE disposition = 'discovered' "
+        "AND source_path IN (SELECT source_path FROM errors WHERE stage = 'ingest' "
+        "AND resolved = 0 AND retry_count >= ?)",
+        (MAX_ATTEMPTS,),
+    )
+    return cur.rowcount
+
+
+def ingest(conn, limit: int | None = None, sample: bool = False,
+           recent_first: bool = False, progress=None) -> dict:
+    """Ingest all (or a random sample of) discovered photo AND video files.
+
+    recent_first (V2 spec B6): newest files first by file mtime, so a first
+    sweep capped with `limit` fills the sky with this year's photos in minutes
+    and the archive backfills overnight. mtime is stored as text, so it is
+    ordered numerically; unknown mtimes go last.
+    progress(done, total): called every 25 files, for the installer's count-up."""
+    run = start_run(conn, "ingest")
+    retired = _dead_letter_exhausted(conn)
+    if retired:
+        print(f"  {retired} unreadable file(s) retired — `mvault retry` to release")
+    if sample:
+        order = "ORDER BY RANDOM()"
+    elif recent_first:
+        order = "ORDER BY (mtime IS NULL), CAST(mtime AS REAL) DESC, id"
+    else:
+        order = "ORDER BY id"
+    sql = (
+        "SELECT * FROM files WHERE disposition='discovered' "
+        "AND media_kind IN ('photo','video') "
+        + order
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql).fetchall()
+
+    stats = {"canonical": 0, "duplicate": 0, "live_photo": 0, "vaulted": 0, "purged": 0,
+             "archived": 0, "too_large": 0, "errors": 0, "failed": retired}
+    for i, row in enumerate(rows, 1):
+        try:
+            stats[ingest_one(conn, row)] += 1
+        except Exception as e:
+            stats["errors"] += 1
+            attempts = record_error(
+                conn, "ingest", repr(e), source_path=row["source_path"])
+            if attempts >= MAX_ATTEMPTS:
+                _dead_letter(conn, row["id"], row["source_path"])
+                stats["failed"] += 1
+        if progress and i % 25 == 0:
+            progress(i, len(rows))
+        if i % 50 == 0:
+            conn.commit()
+            print(f"  ingested {i}/{len(rows)}", flush=True)
+    conn.commit()
+    finish_run(conn, run, stats)
+    return stats

@@ -1,0 +1,12 @@
+# Runtime deps for the bundled Constellation backend (memoryvault-brain).
+# The vision LLM is NOT here — Ollama pulls it at setup (runs on CPU or GPU).
+pillow
+pillow-heif
+imagehash
+requests
+cryptography
+numpy
+reverse_geocoder
+opencv-python-headless
+onnxruntime
+insightface

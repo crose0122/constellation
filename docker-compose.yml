@@ -1,0 +1,45 @@
+# Memory Vault — one-command self-hosted family photo system.
+#
+#   1. cp .env.example .env   (then edit paths if you like)
+#   2. docker compose up -d
+#   3. docker compose exec ollama ollama pull qwen2.5vl:7b
+#   4. Put photos in ./photos (or point MEMORYVAULT_SOURCE elsewhere)
+#   5. docker compose run --rm memoryvault pipeline
+#   6. Open http://localhost:8484
+#
+# GPU: uncomment the `deploy` block under `ollama` for an NVIDIA card
+# (needs the NVIDIA Container Toolkit). Without it, tagging runs on CPU —
+# correct, just slow (leave the pipeline running overnight).
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    # ports: ["11434:11434"]   # expose only if you want host access
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  memoryvault:
+    build: .
+    image: memory-vault:latest
+    restart: unless-stopped
+    depends_on: [ollama]
+    env_file: [.env]
+    ports:
+      - "${MEMORYVAULT_PORT:-8484}:8484"
+    volumes:
+      - ${MEMORYVAULT_SOURCE:-./photos}:/photos:ro   # your photos, READ-ONLY
+      - library:/data/library                        # the managed library + db
+      - vault:/data/vault                            # flagged content (see README)
+
+volumes:
+  ollama-models:
+  library:
+  vault:

@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Constellation — the wall</title>
+<link rel="stylesheet" href="/static/frames.css">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    /* night-sky fallback while the live constellation loads behind the wall */
+    background: radial-gradient(ellipse at 50% 40%, #061020 0%, #010409 72%);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #d9c9a8;
+  }
+  /* warm veil: a plaster tint floating over the star field, so the salon
+     keeps its candlelit mood while the constellation glows through. Opaque
+     enough that the sky reads as atmosphere, never as a page behind a page. */
+  #wall {
+    background: radial-gradient(ellipse at 50% 35%, #191410aa 0%, #0c0a0899 70%, #06050499 100%);
+  }
+  /* The living constellation shows through behind the frames: the chrome-less
+     calm sphere (/ambient?calm=1 — no autopilot, no labels, no photo faces).
+     Negative z paints it under the wall; pointer-events off keeps every tap
+     on the frames; the brightness cut keeps the brightest star well below the
+     dimmest photograph, so the backdrop can never upstage the salon. */
+  #sky {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    border: 0; z-index: -1; pointer-events: none;
+    filter: brightness(0.5) saturate(0.8);
+  }
+  #wall {
+    height: 100%; width: 100%; padding: clamp(10px, 2vw, 34px);
+    display: grid; gap: clamp(10px, 1.6vw, 30px);
+    grid-auto-flow: dense;
+  }
+  /* Photographic antique frames: real frame art (frame-*.png) with the
+     picture window cut to transparency. The art is the whole frame — no
+     generated moulding, no CSS mat; each profile names its window as a % of
+     the art in FRAME_ART below. The f-* mouldings in frames.css still exist
+     but are no longer hung here. */
+  .aframe { position: relative; display: flex; align-items: center; justify-content: center; }
+  /* the frame box is sized in JS to the art's NATIVE aspect, contain-fit in
+     its grid cell — photographic ornament must never stretch to the cell */
+  .fbox { position: relative; }
+  .aframe .art {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: fill; pointer-events: none; z-index: 2;
+    /* shadow on the static art layer (follows the silhouette) rather than
+       the container: a filter on an ancestor of a playing video re-runs
+       every video frame and melts a budget TV box */
+    filter: drop-shadow(0 18px 22px #000c);
+  }
+  .aframe .win {                        /* the picture window behind the art */
+    position: absolute; overflow: hidden; background: #0c0a08; z-index: 1;
+  }
+  .aframe .win img, .aframe .win video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; opacity: 0; transition: opacity 1.6s ease;
+  }
+  .aframe .win img.on, .aframe .win video.on { opacity: 1; }
+  /* Timber frames: generated border-image mouldings (f-* in frames.css) —
+     the quiet, mat-bearing frames between the loud antiques. They stretch
+     to any shape, so they also absorb awkward cells. */
+  .frame {
+    --fw: clamp(14px, 2.2vw, 46px);    /* molding width */
+    --mat: clamp(8px, 1.2vw, 24px);    /* mat width */
+    position: relative; overflow: hidden; border-radius: 3px;
+    box-shadow: 0 22px 36px -10px #000d;
+    border: var(--fw) solid transparent;
+  }
+  .frame::before {                      /* the mat + gold fillet line */
+    content: ""; position: absolute; inset: 0; z-index: 1;
+    background: #16120d;
+    box-shadow: inset 0 0 0 2px #8a6a3a, inset 0 0 0 4px #16120d,
+                inset 0 0 14px #000b;
+  }
+  .frame.m-linen::before {
+    background: #d9cdb4;
+    box-shadow: inset 0 0 0 2px #b08d3f, inset 0 0 0 4px #d9cdb4,
+                inset 0 0 12px #0004;
+  }
+  .frame.m-cream::before {
+    background: #efe7d6;
+    box-shadow: inset 0 0 0 3px #cbbfa5, inset 0 0 12px #0003;
+  }
+  .frame::after {                       /* glass sheen */
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+    background: linear-gradient(115deg, #ffffff14 0%, transparent 30%);
+  }
+  .frame img, .frame video {
+    position: absolute; inset: var(--mat); z-index: 2;
+    width: calc(100% - 2*var(--mat));
+    height: calc(100% - 2*var(--mat));
+    object-fit: cover; background: #0c0a08;
+    opacity: 0; transition: opacity 1.6s ease;
+  }
+  .frame img.on, .frame video.on { opacity: 1; }
+  /* the gallery placard: a tiny label plate on every picture — witty
+     placard text when the pipeline has written one, the date until then */
+  .cap {
+    position: absolute; z-index: 4; pointer-events: none;
+    font-size: 0.6rem; line-height: 1.3; text-align: center;
+    color: #e8dcc2; background: #241b12e6;
+    border: 1px solid #6b5a3a77; border-radius: 2px;
+    padding: 2px 7px; max-height: 2.9em; overflow: hidden;
+  }
+  .cap:empty { opacity: 0; }
+  .frame .cap { left: 14%; right: 14%; bottom: calc(var(--mat) * 0.35); }
+  #hint {
+    position: fixed; bottom: 8px; right: 12px; z-index: 5;
+    font-size: 0.7rem; color: #d9c9a855;
+    /* visible long enough to find your way back, then the wall is just a
+       wall — no chrome on the family display */
+    animation: hintfade 1.5s ease 12s forwards;
+  }
+  #hint a { color: #d9c9a888; }
+  @keyframes hintfade { to { opacity: 0; visibility: hidden; } }
+
+/* Tap a picture on the wall to open it here: full-screen, with the same
+   actions the gallery offers. The wall keeps breathing behind it, but the
+   frame you opened is pinned so it can't be swapped out under your finger. */
+#wlb {
+  position: fixed; inset: 0; z-index: 50; display: none;
+  background: rgba(4, 8, 14, 0.94);
+  align-items: center; justify-content: center; flex-direction: column;
+  gap: 1rem; padding: 2vmin;
+}
+#wlb.on { display: flex; }
+#wlb .media { max-width: 94vw; max-height: 78vh; box-shadow: 0 2rem 5rem #000; }
+#wlb .bar { display: flex; gap: 0.6rem; flex-wrap: wrap; justify-content: center; }
+#wlb button {
+  pointer-events: auto; font: inherit; font-size: 0.95rem; cursor: pointer;
+  padding: 0.55rem 1.3rem; border-radius: 999px;
+  background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+}
+#wlb button.danger { background: #3b0d0d; color: #fecaca; border-color: #7f1d1d; }
+#wlb button.vault  { background: #2e1065; color: #ddd6fe; border-color: #4c1d95; }
+#wlb .meta { color: #8fa9c0; font-size: 0.85rem; text-align: center; white-space: pre-line; }
+#wlb .meta b { color: #e8dcc2; font-weight: 500; }
+</style>
+</head>
+<body>
+<iframe id="sky" title="constellation backdrop"></iframe>
+<div id="wall"></div>
+<div id="wlb">
+  <div id="wlbHolder"></div>
+  <div class="meta" id="wlbMeta"></div>
+  <div class="bar">
+    <button id="wlbClose">close</button>
+    <button id="wlbRemove" class="danger">Remove from display</button>
+    <button id="wlbVault" class="vault">Move to Personal Vault</button>
+  </div>
+</div>
+<div id="hint"><a href="/">← constellation</a></div>
+<script src="/static/pin.js"></script>
+<script>
+const qs = new URLSearchParams(location.search);
+const DIM = qs.get("dim"), VALUE = qs.get("value");
+// performance: budget devices choke on many decoding videos + high-DPR frames.
+// ?lite forces the lean path (fewer frames, capped video); otherwise cap
+// concurrent playing videos so a normal wall stays smooth.
+const LITE = qs.has("lite");
+// the backdrop inherits the device class; calm = no self-firing zooms, the
+// sky just twinkles (a backdrop that jumps around upstages the photographs)
+document.getElementById("sky").src = "/ambient?calm=1" + (LITE ? "&lite=1" : "");
+// How many frames may be playing video at once. Lite mode used to be 0, which
+// meant a TV box — the main place this wall runs — never played a single video,
+// only posters. The Shield holds 38ms frames with headroom, so it can afford
+// some; ?videos=N overrides for a weaker box.
+const MAX_VIDEOS = (() => {
+  const q = qs.get("videos");
+  if (q !== null) return Math.max(0, parseInt(q, 10) || 0);
+  return LITE ? 2 : 3;
+})();
+let playingVideos = 0;
+// item pool + a shuffled deck so the whole library shows before repeats
+let pool = [], deck = [], deckPos = 0;
+
+async function loadPool() {
+  let url = "/api/gallery?order=random&limit=250";
+  if (DIM && VALUE)
+    url = `/api/gallery?order=random&limit=250&search=${encodeURIComponent(VALUE)}`;
+  try {
+    const d = await (await fetch(url)).json();
+    pool = (d.photos || []).filter((p) => p.display || p.thumb);
+  } catch (e) { pool = []; }
+  reshuffle();
+}
+function reshuffle() {
+  deck = pool.map((_, i) => i);
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  deckPos = 0;
+}
+function nextItem() {
+  if (!pool.length) return null;
+  if (deckPos >= deck.length) reshuffle();
+  return pool[deck[deckPos++]];
+}
+
+// how many frames fit — a packed salon: floor-to-ceiling frames with the
+// constellation glowing through the gaps. Weak devices keep a lighter hang.
+function gridPlan() {
+  const w = document.documentElement.clientWidth;
+  const h = document.documentElement.clientHeight;
+  const div = LITE ? 460 : 320;
+  const cols = Math.max(2, Math.min(LITE ? 4 : 6, Math.round(w / div)));
+  const rows = Math.max(2, Math.min(LITE ? 3 : 5, Math.round(h / div)));
+  return { cols, rows };
+}
+
+let slots = [];
+function buildWall() {
+  const wall = document.getElementById("wall");
+  const { cols, rows } = gridPlan();
+  wall.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  wall.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  wall.innerHTML = "";
+  slots = [];
+  const cells = cols * rows;
+  // the art stretches to its grid cell, so deal profiles by cell shape
+  const cellRatio = (wall.clientWidth / cols) / (wall.clientHeight / rows);
+  // promote cells to 2x2 "feature" frames for visual rhythm: one anchor
+  // always, a second on big walls, placed half the wall apart
+  const features = new Set();
+  let firstFeature = -1;
+  if (cols >= 3 && rows >= 2) {
+    firstFeature = Math.floor(Math.random() * cells);
+    features.add(firstFeature);
+    if (cols >= 5) features.add((firstFeature + Math.floor(cells / 2)) % cells);
+  }
+  let placed = 0, featureNo = 0;
+  const dealt = [];
+  const FEATURE_PROFILES = ["a-rococo-gilt", "a-baroque-sage"];  // never the same twice
+  for (let i = 0; placed < cells; i++) {
+    const frame = document.createElement("div");
+    frame.className = "aframe";
+    const big = features.has(i) && (placed % cols < cols - 1);
+    const profile = big && cellRatio <= 1.15
+                  ? FEATURE_PROFILES[featureNo++ % FEATURE_PROFILES.length]
+                  : dealProfile(i, cellRatio,
+                      dealt.length % cols ? dealt[dealt.length - 1] : null,
+                      dealt[dealt.length - cols] || null);
+    dealt.push(profile);
+    const cap = document.createElement("div"); cap.className = "cap";
+    let box, win, ar = null;
+    if (profile.startsWith("f-")) {
+      // timber: the moulding is border-image, the mat is ::before, and the
+      // media sits at inset var(--mat) — so the .frame itself is the window
+      box = document.createElement("div");
+      box.className = "frame " + profile + (MATS[(i * 3 + 1) % MATS.length] ? " " + MATS[(i * 3 + 1) % MATS.length] : "");
+      win = box;
+      box.appendChild(cap);
+    } else {
+      const art = FRAME_ART[profile];
+      ar = art.ar;
+      box = document.createElement("div");
+      box.className = "fbox";
+      const [l, t, r, b] = art.opening;
+      win = document.createElement("div");
+      win.className = "win";
+      win.style.left = l + "%"; win.style.top = t + "%";
+      win.style.right = (100 - r) + "%"; win.style.bottom = (100 - b) + "%";
+      if (art.round) win.style.borderRadius = "50%";
+      box.appendChild(win);
+      const artImg = document.createElement("img");
+      artImg.className = "art"; artImg.src = art.src; artImg.alt = "";
+      box.appendChild(artImg);
+      // placard plate straddles the window's bottom sight line
+      cap.style.left = (l + 4) + "%"; cap.style.right = (100 - r + 4) + "%";
+      cap.style.bottom = (100 - b + 1) + "%";
+      box.appendChild(cap);
+    }
+    if (big) { frame.style.gridColumn = "span 2"; frame.style.gridRow = "span 2"; placed += 2; }
+    else placed += 1;
+    frame.appendChild(box);
+    wall.appendChild(frame);
+    const slot = { frame, box, ar, feature: big, win, cap, cur: null, el: null };
+    slots.push(slot);
+  }
+  // second pass, after the grid has laid out: give every frame box its art's
+  // native aspect, contain-fit in the cell — then break the grid. A real
+  // salon hang is never perfectly arranged: each frame takes its own size
+  // (78–100% of what fits), drifts inside its cell's slack, and hangs a
+  // touch off level. All of it is hashed from the slot index, so the wall
+  // keeps its arrangement across repaints and resizes. Reading clientWidth
+  // here costs one reflow for the whole wall instead of one per frame.
+  slots.forEach((s, idx) => {
+    const cw = s.frame.clientWidth, ch = s.frame.clientHeight;
+    // a 2x2 feature on the last row overflows the grid and leaves sliver
+    // cells behind — nothing should hang in a strip of wall
+    if (cw < 90 || ch < 90) { s.frame.style.display = "none"; s.dead = true; return; }
+    // lived-in hang: generous size spread, frames drift to nearly touch,
+    // and hang visibly off level. Features stay full-size and straight.
+    const scale = s.feature ? 1 : 0.65 + 0.35 * hash01(idx, 1);
+    const fit = s.ar ? Math.min(cw, ch * s.ar) : cw;
+    let bw = Math.max(fit * scale, Math.min(110, fit));   // never postage-stamp
+    let bh = s.ar ? bw / s.ar : ch * scale;
+    if (!s.ar) {   // timbers stretch, but a moulding is not a plank
+      const r = bw / bh;
+      if (r > 1.5) bw = bh * 1.5; else if (r < 0.6) bh = bw / 0.6;
+    }
+    const dx = (cw - bw) * (hash01(idx, 2) - 0.5) * 0.95;
+    const dy = (ch - bh) * (hash01(idx, 3) - 0.5) * 0.95;
+    const tilt = s.feature ? 0 : (hash01(idx, 4) - 0.5) * 5;   // up to ±2.5° off level
+    s.box.style.width = bw + "px";
+    s.box.style.height = bh + "px";
+    s.box.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) rotate(${tilt.toFixed(2)}deg)`;
+  });
+  for (const s of slots) if (!s.dead) fillSlot(s, true);
+}
+
+// deterministic per-slot randomness: same slot, same wall, every repaint
+function hash01(i, salt) {
+  let h = (i * 2654435761 + salt * 40503) >>> 0;
+  h ^= h >> 13; h = (h * 2246822519) >>> 0; h ^= h >> 16;
+  return (h >>> 8) / 16777216;
+}
+
+function fillSlot(slot, instant) {
+  if (slot.dead) return;        // hidden sliver cell — hangs nothing
+  if (slot.pinned) return;      // open in the lightbox — leave it alone
+  const item = nextItem();
+  if (!item) return;
+  slot.cur = item;
+  // decoding several videos at once melts a budget GPU — cap how many play,
+  // and in LITE play none (weak device / ?lite). Capped video items show their
+  // poster as a still image instead.
+  const wantVideo = item.kind === "video" && item.video;
+  const isVideo = wantVideo && playingVideos < MAX_VIDEOS;
+  const el = document.createElement(isVideo ? "video" : "img");
+  if (isVideo) {
+    el.src = item.video; el.muted = true; el.loop = true;
+    el.autoplay = true; el.playsInline = true; el.preload = "metadata";
+    el.poster = item.display || item.thumb;
+    el._counted = true; playingVideos++;
+    el.play().catch(() => {});
+  } else {
+    el.src = item.display || item.thumb;   // poster for a capped video
+    el.loading = "eager";
+  }
+  el.style.cursor = "pointer";
+  el.addEventListener("click", (ev) => { ev.stopPropagation(); openLightbox(slot); });
+  const show = () => requestAnimationFrame(() => el.classList.add("on"));
+  if (isVideo) show(); else el.onload = show;
+  // crossfade: new element fades in over the old, then old is removed
+  const old = slot.el;
+  if (old && old._counted) playingVideos = Math.max(0, playingVideos - 1);
+  slot.win.appendChild(el);
+  slot.el = el;
+  if (old) setTimeout(() => old.remove(), 1700);
+  // gallery placard: the pipeline's witty label when it exists, date until then
+  slot.cap.textContent = item.placard ||
+    ((item.taken_at ? new Date(item.taken_at).toLocaleDateString(undefined,
+      { year: "numeric", month: "short" }) : "") + (isVideo ? "  ▶" : ""));
+  slot.cap.title = item.placard || "";
+}
+
+// The photographic frame deck. opening = the picture window as % of the art
+// [left, top, right, bottom]; round windows get an elliptical clip so the
+// photo can't poke through openwork scrolls; ar = the art's native w/h,
+// which the frame box always keeps (contain-fit, never stretched). Opening
+// values come from the Constellation design system
+// (components/media/Frame.jsx) — keep in sync.
+const FRAME_ART = {
+  "a-baroque-dark": { src: "/static/frame-baroque-dark.png",       ar: 176/201, opening: [28.4, 21.4, 71.6, 77.6] },
+  "a-baroque-sage": { src: "/static/frame-baroque-sage.png",       ar: 522/586, opening: [26.2, 24.4, 72.0, 74.9] },
+  "a-round-gilt":   { src: "/static/frame-round-gilt.png",         ar: 1,       opening: [16.3, 16.3, 83.9, 83.9], round: true },
+  "a-oval-ebony":   { src: "/static/frame-oval-ebony.png",         ar: 351/463, opening: [20.2, 24.0, 76.4, 83.8], round: true },
+  "a-quatrefoil":   { src: "/static/frame-quatrefoil-gilt.png",    ar: 1,       opening: [25.0, 22.2, 75.0, 78.3] },
+  "a-rococo-gilt":  { src: "/static/frame-rococo-gilt.png",        ar: 372/537, opening: [23.4, 24.0, 76.1, 79.5] },
+  "a-baroque-gilt": { src: "/static/frame-baroque-gilt-small.png", ar: 176/235, opening: [26.7, 23.4, 73.3, 75.3] },
+};
+// A real salon wall is mostly gilt with a few outliers, and no two neighbours
+// match. The antiques (a-*) never stretch, so decks are shape-matched: tall
+// cells hang the tall frames, near-square cells the square-ish ones, wide
+// cells the true squares. The generated timbers (f-*, border-image) stretch
+// to any shape, so they thread through every deck as the quiet, mat-bearing
+// frames between the loud antiques — and absorb awkward cells. Deterministic
+// in i so the wall doesn't reshuffle its own styles on every repaint.
+const DECK_TALL = ["a-rococo-gilt", "f-walnut", "a-baroque-gilt", "a-rococo-gilt", "f-oak", "a-oval-ebony", "a-baroque-gilt", "f-ebonised", "a-rococo-gilt", "f-giltwood"];
+const DECK_MID  = ["a-baroque-sage", "f-oak", "a-baroque-dark", "a-rococo-gilt", "f-walnut", "a-quatrefoil", "f-mahogany", "a-baroque-gilt", "f-giltwood", "a-baroque-dark"];
+const DECK_WIDE = ["a-quatrefoil", "f-walnut", "a-round-gilt", "f-oak", "a-baroque-sage", "f-giltwood", "a-baroque-dark", "f-mahogany", "a-quatrefoil", "f-cherry"];
+const MATS = ["", "", "m-linen", "", "m-cream", ""];
+function dealProfile(i, cellRatio, left, up) {
+  const deck = cellRatio < 0.82 ? DECK_TALL : cellRatio <= 1.15 ? DECK_MID : DECK_WIDE;
+  let k = (i * 5 + 2) % deck.length;
+  // walk until the profile differs from both the left and the up neighbour —
+  // every deck holds >= 3 distinct profiles, so an escape always exists
+  for (let step = 0; step < deck.length && (deck[k] === left || deck[k] === up); step++)
+    k = (k + 1) % deck.length;
+  return deck[k];
+}
+
+// gently swap ONE random frame at a time so the wall is always alive but
+// never busy; videos are left to play a while before being cycled out.
+
+const SWAP_MS = 12000;   // stately: with a packed wall, one change at a time
+function tick() {
+  if (slots.length) {
+    // prefer swapping a still image over a mid-play video
+    const stills = slots.filter((s) => !s.dead && s.el && s.el.tagName === "IMG");
+    const pick = (stills.length ? stills : slots)[
+      Math.floor(Math.random() * (stills.length ? stills.length : slots.length))];
+    fillSlot(pick, false);
+  }
+}
+
+let swapTimer = null;
+function start() {
+  clearInterval(swapTimer);
+  buildWall();
+  swapTimer = setInterval(tick, SWAP_MS);
+}
+let rt = null;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(start, 400); });
+
+/* ---------- lightbox: open one picture, act on it ---------- */
+const wlb = document.getElementById("wlb");
+const wlbHolder = document.getElementById("wlbHolder");
+const wlbMeta = document.getElementById("wlbMeta");
+let wlbSlot = null;
+
+function openLightbox(slot) {
+  const item = slot.cur;
+  if (!item) return;
+  wlbSlot = slot;
+  slot.pinned = true;                 // don't cycle this frame while it's open
+  wlbHolder.textContent = "";
+  const isVid = item.kind === "video" && item.video;
+  const el = document.createElement(isVid ? "video" : "img");
+  el.className = "media";
+  if (isVid) {
+    el.src = item.video; el.controls = true; el.autoplay = true;
+    el.loop = true; el.playsInline = true;
+  } else {
+    el.src = item.display || item.thumb;
+  }
+  wlbHolder.appendChild(el);
+  const when = item.taken_at
+    ? new Date(item.taken_at).toLocaleDateString(undefined,
+        { year: "numeric", month: "long", day: "numeric" })
+    : "";
+  // label is often just the raw date — don't print the same day twice
+  const extra = (item.label || "").trim();
+  const dupe = !extra || /^\d{4}-\d{2}-\d{2}/.test(extra);
+  wlbMeta.textContent = "";
+  if (item.placard) {           // the gallery label, top billing
+    const b = document.createElement("b");
+    b.textContent = item.placard;
+    wlbMeta.appendChild(b);
+    wlbMeta.appendChild(document.createTextNode("\n"));
+  }
+  wlbMeta.appendChild(document.createTextNode(
+    [when, dupe ? "" : extra].filter(Boolean).join("  ·  ")));
+  wlb.classList.add("on");
+}
+
+function closeLightbox() {
+  wlb.classList.remove("on");
+  wlbHolder.textContent = "";         // stops a playing video
+  if (wlbSlot) wlbSlot.pinned = false;
+  wlbSlot = null;
+}
+
+// drop the photo from this slot and from the pool, so it doesn't come back
+function retireCurrent() {
+  if (!wlbSlot) return;
+  const gone = wlbSlot.cur;
+  if (gone) {
+    const i = pool.findIndex((x) => x.id === gone.id);
+    if (i >= 0) pool.splice(i, 1);
+  }
+  const slot = wlbSlot;
+  closeLightbox();
+  fillSlot(slot, false);
+}
+
+document.getElementById("wlbClose").addEventListener("click", closeLightbox);
+wlb.addEventListener("click", (ev) => { if (ev.target === wlb) closeLightbox(); });
+addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeLightbox(); });
+
+document.getElementById("wlbRemove").addEventListener("click", async () => {
+  if (!wlbSlot || !wlbSlot.cur) return;
+  const id = wlbSlot.cur.id;
+  try {
+    const r = await fetch(`/api/photo/remove?id=${id}`);
+    if (!r.ok) throw new Error(await r.text());
+    retireCurrent();
+  } catch (e) { alert("Could not remove it: " + e.message); }
+});
+
+document.getElementById("wlbVault").addEventListener("click", async () => {
+  if (!wlbSlot || !wlbSlot.cur) return;
+  const id = wlbSlot.cur.id;
+  const dest = await pickVaultFolder("Move into the Personal Vault.");
+  if (!dest) return;
+  try {
+    const r = await fetch(`/api/photo/vault?id=${id}&dest=${dest}`);
+    if (r.status === 409) { alert("The vault is locked — open it first."); return; }
+    if (!r.ok) throw new Error(await r.text());
+    retireCurrent();
+  } catch (e) { alert("Could not vault it: " + e.message); }
+});
+
+// kiosk cycle: the constellation sends us here for a few minutes, then we
+// hand back so it can show the sphere again. Any tap escapes to explore.
+const KIOSK = qs.get("kiosk") === "1";
+const WALL_MS = 5 * 60 * 1000;
+if (KIOSK) {
+  const home = "/" + (LITE ? "?lite=1" : "");
+  // hand back only if nobody is looking at a picture; otherwise wait and retry
+  const goHome = () => {
+    if (wlb.classList.contains("on")) { setTimeout(goHome, 30000); return; }
+    location.href = home;
+  };
+  setTimeout(goHome, WALL_MS);
+  // a tap on the wall background escapes to explore; a tap on a picture opens
+  // it instead (that handler stops the event before it reaches us)
+  addEventListener("pointerdown", (ev) => {
+    if (wlb.contains(ev.target) || wlb.classList.contains("on")) return;
+    location.href = home;
+  });
+}
+
+(async function boot() {
+  await loadPool();
+  start();
+  // refresh the pool hourly so newly-added photos join the wall
+  setInterval(loadPool, 3600 * 1000);
+})();
+</script>
+</body>
+</html>

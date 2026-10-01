@@ -1,0 +1,9 @@
+[Unit]
+Description=Memory Vault - nightly DB snapshot timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

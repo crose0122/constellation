@@ -1,0 +1,69 @@
+{
+  "name": "constellation-setup",
+  "productName": "Constellation Setup",
+  "version": "0.1.0",
+  "description": "Constellation installer \u2014 one evening from a spare PC to your family photos on the wall. No GPU needed, no terminal, nothing leaves your network.",
+  "main": "main.js",
+  "author": "Constellation",
+  "license": "SEE LICENSE IN ../README.md",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "dist": "electron-builder --win nsis",
+    "dist:linux": "electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.constellation.setup",
+    "productName": "Constellation Setup",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "navigation.js",
+      "open-url.js",
+      "preload.js",
+      "scan.js",
+      "setup.js",
+      "decide.js",
+      "autostart.js",
+      "ui/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../scripts/dist/memoryvault-brain",
+        "to": "backend"
+      },
+      {
+        "from": "models",
+        "to": "models"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Constellation Setup"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Graphics"
+    }
+  }
+}
