@@ -13,4 +13,6 @@ contextBridge.exposeInMainWorld("setup", {
   defaults: () => ipcRenderer.invoke("defaults"),
   openWall: () => ipcRenderer.invoke("openWall"),
   onProgress: (cb) => ipcRenderer.on("progress", (_e, p) => cb(p)),
+  // Debug Console: read-only log tail + status checks (main-process log ring)
+  debugState: (since) => ipcRenderer.invoke("debugState", typeof since === "string" ? since : ""),
 });

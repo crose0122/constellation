@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Constellation — home</title>
+<link rel="icon" href="/static/icon-192.png">
 <style>
   * { box-sizing: border-box; margin: 0; }
   body {
@@ -64,6 +65,10 @@
   <a class="card" href="/curation"><div class="i">🗂️</div>
     <div class="n">Curation</div>
     <div class="d">Triage bins — Trash, Removed, and Marked-for-deletion.</div></a>
+  <a class="card" href="#debug" id="debug-card"
+     onclick="event.preventDefault(); window.dispatchEvent(new Event('constellation:toggle-debug'))"><div class="i">🐞</div>
+    <div class="n">Debug Console</div>
+    <div class="d">Server log and health checks (family PIN). Ctrl+Shift+D on any page.</div></a>
 </div>
 
 <footer>Self-hosted · LAN-only · nothing leaves your network</footer>

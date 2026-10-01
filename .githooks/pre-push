@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # Pre-push gate for the public Constellation repo.
-#   1. scanner regressions + tools/leak_scan.py — fail-closed public-tree privacy
+#   1. scanner regressions + tools/leak_scan.py — fail-closed public-tree privacy,
+#      plus every pushed commit's message and new blobs (from the push refs)
 #   2. gitleaks (if installed) — credentials. GitHub secret scanning + push
 #      protection also run server-side on this public repo.
 # ENABLE (once per clone):  git config core.hooksPath .githooks
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
+# Git passes the pushed refs on stdin; read them before anything else can.
+PUSH_LINES=$(cat)
+
 echo "[pre-push] leak scan…"
 python3 -m unittest -v tools/test_leak_scan.py
 python3 tools/leak_scan.py --require-private-denylist
+echo "[pre-push] pushed commits + messages scan…"
+# Every commit this push publishes (not what is checked out): its stored
+# message and every blob it introduces. History already on the remote is
+# excluded; a new branch is scanned back to what the remote already has.
+printf '%s\n' "$PUSH_LINES" | python3 tools/leak_scan.py --require-private-denylist --pushed "$1"
 
 if command -v gitleaks >/dev/null 2>&1; then
   echo "[pre-push] credential scan (gitleaks)…"

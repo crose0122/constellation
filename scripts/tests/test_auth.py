@@ -124,6 +124,23 @@ class OpenSurfacesTest(_Base):
             status, *_ = self.req("GET", path)
             self.assertNotIn(status, (401, 403), path)
 
+    def test_favicon_is_explicitly_open_and_serves_the_brand_png(self):
+        expected = (srv.STATIC_DIR / "icon-192.png").read_bytes()
+        self.assertEqual(auth.classify("/favicon.ico"), auth.OPEN)
+        status, headers, body, _ = self.req("GET", "/favicon.ico")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertEqual(body, expected)
+        self.assertEqual(
+            __import__("hashlib").sha256(body).hexdigest(),
+            "2d0b55c60dffab841138bb43159ef244543ff0238d5ea691709aa61eceb12f58",
+        )
+
+    def test_login_page_declares_the_brand_favicon(self):
+        status, _, body, _ = self.req("GET", "/login")
+        self.assertEqual(status, 200)
+        self.assertIn(b'<link rel="icon" href="/static/icon-192.png">', body)
+
 
 class PrivateSurfacesTest(_Base):
     # Written out by hand ON PURPOSE. Deriving this list from auth.ROUTES
