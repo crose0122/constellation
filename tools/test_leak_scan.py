@@ -1248,6 +1248,44 @@ class PrePushHookTest(unittest.TestCase):
         self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
         self.assertEqual(deleted.returncode, 0, deleted.stdout + deleted.stderr)
 
+    def test_hook_does_not_leave_bytecode_its_own_scan_would_reject(self):
+        """The hook's unittest step must not create an artifact step 2 rejects.
+
+        Regression for the defect that made a pristine clone unpushable: step 1
+        (`python3 -m unittest tools/test_leak_scan.py`) imports tools/, so Python
+        wrote tools/__pycache__/*.pyc, and step 2's untracked scan then matched
+        the absolute source path baked into that bytecode. Asserted on the hook
+        text and on the artifact, not on any one host's private-path spelling,
+        so the check holds wherever the suite runs.
+        """
+        hook = (REPO_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
+        unittest_lines = [
+            line.strip() for line in hook.splitlines()
+            if "unittest" in line and "test_leak_scan" in line
+        ]
+        self.assertEqual(len(unittest_lines), 1, unittest_lines)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1", unittest_lines[0],
+                      "the hook's unittest step must run with bytecode writing off")
+
+        # And prove the invariant on a real run of that exact line.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "work"
+            root.mkdir()
+            _init_repo(root)
+            (root / "tools").mkdir()
+            shutil.copy2(MODULE_PATH, root / "tools" / "leak_scan.py")
+            shutil.copy2(REPO_ROOT / "tools" / "test_leak_scan.py",
+                         root / "tools" / "test_leak_scan.py")
+            ran = subprocess.run(["bash", "-c", unittest_lines[0]], cwd=root,
+                                 env=_git_env({"PYTHONDONTWRITEBYTECODE": ""}),
+                                 capture_output=True, text=True)
+            leftover = sorted((root / "tools" / "__pycache__").glob("*.pyc")) \
+                if (root / "tools" / "__pycache__").is_dir() else []
+        self.assertNotIn("ModuleNotFoundError", ran.stderr + ran.stdout)
+        self.assertEqual(leftover, [],
+                         f"hook left bytecode for its own scan to find: {leftover}")
+
 
 class PushedRefsTest(unittest.TestCase):
     """scan_pushed directly, including the CI shape (explicit published base)."""
