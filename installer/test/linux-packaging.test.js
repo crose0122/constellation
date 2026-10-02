@@ -84,6 +84,22 @@ test("AppArmor profile parses with the system apparmor_parser when available", (
   execFileSync(parser, ["-QK", path.join(ROOT, "linux/apparmor/constellation-setup")], { stdio: "pipe" });
 });
 
+// deb.depends REPLACES electron-builder's default list rather than extending it.
+// Listing only apparmor once shipped a .deb that installed cleanly on a minimal
+// Ubuntu 26.04 and then died at launch with "libasound.so.2: cannot open shared
+// object file". Keep Electron's defaults, plus the two libraries Electron loads
+// directly that the defaults omit (ALSA and GBM). The pre-t64 names resolve on
+// 24.04+ through the t64 packages' Provides.
+const ELECTRON_RUNTIME_DEPENDS = ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6",
+  "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "libasound2", "libgbm1"];
+
+test("deb depends keeps the Electron runtime libraries, not only apparmor", () => {
+  for (const dep of ELECTRON_RUNTIME_DEPENDS) {
+    assert.ok(build.deb.depends.includes(dep), `deb.depends is missing ${dep}`);
+  }
+  assert.ok(build.deb.depends.includes("apparmor"));
+});
+
 test("after-install loads the profile before anything can launch, and tolerates no apparmor", () => {
   assert.equal(build.deb.afterInstall, "linux/deb/after-install.sh");
   const script = render(readRel("linux/deb/after-install.sh"));
@@ -123,7 +139,9 @@ test("built .deb (if present): profile is a root-owned 0644 conffile and scripts
   const line = listing.split("\n").find((l) => l.endsWith("./etc/apparmor.d/constellation-setup"));
   assert.ok(line, "profile missing from package");
   assert.match(line, /^-rw-r--r-- (root\/root|0\/0) /, `profile must be root:root 0644, got: ${line}`);
-  assert.equal(execFileSync("dpkg-deb", ["-f", deb, "Depends"], { encoding: "utf8" }).trim().includes("apparmor"), true);
+  const depends = execFileSync("dpkg-deb", ["-f", deb, "Depends"], { encoding: "utf8" }).trim();
+  assert.equal(depends.includes("apparmor"), true);
+  for (const dep of ELECTRON_RUNTIME_DEPENDS) assert.ok(depends.includes(dep), `built .deb Depends is missing ${dep}`);
   const tmp = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "cst-ctl-"));
   try {
     execFileSync("dpkg-deb", ["-e", deb, tmp]);
