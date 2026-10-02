@@ -116,6 +116,9 @@ def _refresh_renditions(row, orientation: str):
 
 
 def describe(conn, shard: str | None = None, limit: int | None = None) -> dict:
+    from . import config
+    if not config.VISION_ENABLED:
+        return {"skipped": "describe", "reason": "vision model is off on this install"}
     from .tag import call_vision
 
     conn.execute(

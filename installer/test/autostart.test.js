@@ -1126,3 +1126,25 @@ test("verify findings: unrelated system units are ignored, ours still fail close
     "a finding that names no file still counts");
   assert.equal(a.verifyFindings("", unit), "");
 });
+
+test("installLinux writes the picked ports into the unit it actually installs", async () => {
+  // Mutation check (2026-10-02): dropping the ports here left every test green
+  // while the unit bound 8484/8485 and the firewall, readiness check and links
+  // used the picked pair.
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-ports-"));
+  try {
+    const run = async (cmd, args) => {
+      if (cmd === "loginctl") return { ok: true, out: "", err: "" };
+      if (args.includes("is-enabled")) return { ok: false, out: "not-found\n", err: "" };
+      if (args.includes("is-active")) return { ok: true, out: "active\n", err: "" };
+      return { ok: true, out: "", err: "" };
+    };
+    const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env", httpPort: 8584, tlsPort: 8585 },
+      { run, home, user: "family" });
+    assert.equal(r.ok, true);
+    const unit = fs.readFileSync(path.join(home, ".config", "systemd", "user", a.UNIT), "utf8");
+    assert.match(unit, /--port 8584 --tls-port 8585/);
+    assert.doesNotMatch(unit, /--port 8484/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});

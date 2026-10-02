@@ -92,3 +92,18 @@ test("servesOurCa: a dead port is 'not ours', never an exception", async () => {
   await new Promise((r) => s.close(r));
   assert.equal(await n.servesOurCa("127.0.0.1", port, CA, 300), false);
 });
+
+test("chooseLanAddress: the default-route interface beats a 'better' private range", () => {
+  const ifs = { a: [v4(ip(192, 168, 0, 7))], b: [v4(ip(10, 0, 0, 9))] };
+  assert.equal(n.chooseLanAddress(ifs, null), ip(192, 168, 0, 7));
+  assert.equal(n.chooseLanAddress(ifs, "b"), ip(10, 0, 0, 9), "the interface that carries traffic wins");
+});
+
+test("servesOurCa: the right body with a non-200 status is not ours", async () => {
+  const s404 = await caServer(CA, 404);
+  const s500 = await caServer(CA, 500);
+  try {
+    assert.equal(await n.servesOurCa("127.0.0.1", s404.address().port, CA), false);
+    assert.equal(await n.servesOurCa("127.0.0.1", s500.address().port, CA), false);
+  } finally { s404.close(); s500.close(); }
+});

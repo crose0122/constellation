@@ -140,11 +140,8 @@ ipcMain.handle("install", async (_e, cfg) => {
   const send = progressSender();
   // Ollama + the vision model exist only for "Describe your photos". Without
   // that yes, nothing is downloaded and nothing touches the graphics card.
-  if (!setup.visionOn(cfg)) return { ok: true, skipped: true };
   try {
-    await setup.installOllama(cfg, send);
-    await setup.pullModel(cfg.model, send);
-    return { ok: true };
+    return await setup.installVision(cfg, send);
   } catch (e) {
     send({ phase: "error", msg: String(e && e.message || e) });
     return { ok: false, error: String(e) };

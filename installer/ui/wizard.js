@@ -23,7 +23,7 @@ const state = {
   backupChoice: null,       // drive path | "other" | "skip"
   backupOther: "",
   finish: null, lan: null, swept: 0, sweepTotal: 0,
-  error: null, describeState: "off",   // off | working | on | failed
+  error: null, pinError: null, describeState: "off",   // off | working | on | failed
   log: [],
   cfg: { model: "qwen2.5vl:7b", mode: "cpu", libraryRoot: "", sources: [],
          vaultMode: "dir", backupTarget: "", updates: true, describe: false },
@@ -259,6 +259,7 @@ const SCREENS = {
       <div class="field"><label for="pin1">PIN, 4 to 8 digits</label>
         <div class="pin"><input id="pin1" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" aria-label="PIN">
         <input id="pin2" type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" aria-label="Type it again" placeholder="again"></div></div>
+      ${state.pinError ? `<p class="msg stop" role="alert">${esc(state.pinError)}</p>` : ""}
       <p class="quiet" id="pinmsg"></p>`,
       details: "Stored as a salted hash inside the library. Never sent anywhere, never written to the settings file.",
       next: { label: "Continue", fn: () => go("backup"), ok: pinOk },
@@ -272,7 +273,7 @@ const SCREENS = {
         };
         const on = (id, set) => { const el = $(id); el.value = id === "pin1" ? pin : pin2;
           el.oninput = () => { el.value = el.value.replace(/\D/g, ""); set(el.value); msg(); }; };
-        on("pin1", (v) => { pin = v; }); on("pin2", (v) => { pin2 = v; });
+        on("pin1", (v) => { pin = v; state.pinError = null; }); on("pin2", (v) => { pin2 = v; state.pinError = null; });
         msg();
       } };
   },
@@ -297,7 +298,7 @@ const SCREENS = {
       ${target && !bkErr ? `<p class="msg ok">Backups go to ${esc(target)}. Constellation doesn't read photos from it.</p>` : ""}
       ${state.error ? `<p class="msg stop" role="alert">${esc(state.error)}</p>` : ""}`,
       details: () => target ? `Backup target: ${target}` : state.backupChoice === "skip" ? "No backup drive yet" : "Nothing chosen",
-      next: { label: "Start my sky", fn: () => startSky(), ok: () => !!state.backupChoice && !bkErr && (state.backupChoice !== "other" || !!state.backupOther) },
+      next: { label: "Start my sky", fn: () => startSky(), ok: () => pinOk() && !!state.backupChoice && !bkErr && (state.backupChoice !== "other" || !!state.backupOther) },
       back: () => go("pin"),
       wire() {
         document.querySelectorAll("[data-bk]").forEach((r) => { r.onchange = () => { state.backupChoice = r.dataset.bk; state.error = null; render(); }; });
@@ -393,7 +394,10 @@ async function startSky() {
   if (!r.ok) {
     if (r.detail) log("prepare failed: " + r.detail);
     if (r.field === "lib") { state.libError = r.error; go("keep"); return; }
-    state.error = r.error || "Setup couldn't start."; render(); return;
+    // The PIN was handed over and cleared, so a retry from here would send an
+    // empty one. Go back to the PIN step and say what happened.
+    state.pinError = r.error || "Setup couldn't start. Type the PIN again to retry.";
+    go("pin"); return;
   }
   log("prepare: library, family PIN and family certificate ready");
   state.error = null;

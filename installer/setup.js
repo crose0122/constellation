@@ -588,6 +588,15 @@ function startBackgroundSweep(backendDir, cfg) {
   return { ok: true };
 }
 
+// The model download for "Describe your photos". Without the family's explicit
+// yes it does nothing at all: no Ollama, no 6 GB model, no graphics card.
+async function installVision(cfg, send, runtime = {}) {
+  if (!visionOn(cfg)) return { ok: true, skipped: true };
+  await (runtime.installOllama || installOllama)(cfg, send);
+  await (runtime.pullModel || pullModel)(cfg.model, send);
+  return { ok: true };
+}
+
 // "Describe your photos" turned on after setup: just the vision stages, over
 // whatever is already in the library, detached like the overnight chain.
 function startVisionSweep(backendDir, cfg) {
@@ -612,5 +621,5 @@ function startVisionSweep(backendDir, cfg) {
 
 module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
   writeConfig, configLines, prepare, launchStack, runFirstSweep, startBackgroundSweep, backendExe,
-  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, backgroundStages, visionOn, libraryLocationError, isInsideDir, startVisionSweep, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable,
+  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, backgroundStages, visionOn, libraryLocationError, isInsideDir, startVisionSweep, installVision, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable,
   isHtmlMediaType, serverUp };

@@ -172,6 +172,52 @@ class PipelineTest(unittest.TestCase):
                     cmd(None)            # must return before touching args/db
                 self.assertIn("vision model is off", out.getvalue())
 
+    def test_vision_off_blocks_every_path_to_the_model(self):
+        # Regression (2026-10-02): `retry` and `placards` reached the
+        # model with vision off because only some CLI commands were gated.
+        # The gate now sits on the one chokepoint plus every stage entry.
+        import io, contextlib
+        from memoryvault import cli, vision_http, tag, describe, placards, curate
+
+        def explode(*a, **k):
+            raise AssertionError("network call with vision off")
+
+        with mock.patch.object(config, "VISION_ENABLED", False), \
+                mock.patch.object(vision_http, "session", explode):
+            # the chokepoint itself
+            with self.assertRaises(vision_http.VisionDisabled):
+                vision_http.post_vision({"model": "m", "prompt": "p"})
+            with self.assertRaises(vision_http.VisionDisabled):
+                vision_http.post_vision_text({"model": "m", "prompt": "p"})
+            # every stage skips cleanly, with no error row per photo
+            for name, fn in (("tag", tag.tag), ("describe", describe.describe),
+                             ("placards", placards.placards), ("rescue", curate.rescue),
+                             ("vision_docs", curate.vision_docs),
+                             ("screenshots", curate.screenshots),
+                             ("screen_captures", curate.screen_captures)):
+                out = fn(self.conn)
+                self.assertEqual(out.get("skipped"), name, name)
+        # The CLI routes that leaked before: `retry` and `placards`.
+        import contextlib as _cl
+        conn = self.conn
+
+        @_cl.contextmanager
+        def fake_conn():
+            yield conn
+
+        with mock.patch.object(config, "VISION_ENABLED", False), \
+                mock.patch.object(vision_http, "session", explode), \
+                mock.patch.object(cli, "_conn", fake_conn):
+            for cmd in (cli.cmd_retry, cli.cmd_placards):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    try:
+                        cmd(mock.Mock(shard=None, limit=None, force=False))
+                    except Exception as e:      # screening needs the vault; irrelevant here
+                        self.fail(f"{cmd.__name__} raised {e!r}")
+                self.assertNotIn("Traceback", out.getvalue())
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM errors WHERE stage IN ('tag','describe','placards')").fetchone()[0], 0)
+
     def test_screen_halts_without_vault_and_scrubs_with_it(self):
         from memoryvault import vault
         from memoryvault.screen import screen

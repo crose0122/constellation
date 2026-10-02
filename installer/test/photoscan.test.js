@@ -106,3 +106,38 @@ test("scanRoots: home plus data drives, never system mounts or the drive holding
     { path: "Z:\\", type: "network" }], "win32").map((x) => x.label);
   assert.deepEqual(w, ["Home", "Photos (D:)"]);
 });
+
+// A fake filesystem, to control exactly what stat/readdir return.
+function fakeFs(tree, ids = {}) {
+  const dir = (p) => tree[p];
+  return { promises: {
+    async readdir(p) {
+      if (!dir(p)) throw new Error("ENOENT");
+      return dir(p).map((e) => ({ name: e.name, isDirectory: () => !!e.dir, isFile: () => !e.dir }));
+    },
+    async stat(p) {
+      const isDir = !!tree[p];
+      return { dev: 1, ino: ids[p] != null ? ids[p] : Math.abs([...p].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7)),
+        size: 60 * 1024, mtime: new Date("2019-06-01T12:00:00Z"), isDirectory: () => isDir };
+    },
+  } };
+}
+const files = (n, prefix = "p") => Array.from({ length: n }, (_, i) => ({ name: `${prefix}${i}.jpg` }));
+
+test("scan enforces its budget INSIDE one huge folder and says it was partial", async () => {
+  // Repro (2026-10-02): 50,000 photos in one folder at 1 ms per stat
+  // ran ~54 s against a 500 ms budget and reported partial:false.
+  let t = 0;
+  const io = fakeFs({ "/h": [{ name: "Big", dir: true }], "/h/Big": files(5000) });
+  io.promises.stat = ((orig) => async (p) => { t += 1; return orig(p); })(io.promises.stat);
+  const r = await ps.scanForPhotos({ roots: [{ path: "/h", label: "Home" }], io, budgetMs: 200, now: () => t });
+  assert.equal(r.partial, true);
+  assert.ok(t < 600, `stopped near the budget, not after all 5000 stats (t=${t})`);
+});
+
+test("scan reads a folder once when two paths lead to it (same device and inode)", async () => {
+  const io = fakeFs({ "/h": [{ name: "A", dir: true }, { name: "B", dir: true }],
+    "/h/A": files(30), "/h/B": files(30) }, { "/h/A": 5000, "/h/B": 5000 });
+  const r = await ps.scanForPhotos({ roots: [{ path: "/h", label: "Home" }], io });
+  assert.equal(r.places.length, 1, "the alias must not be listed or counted twice");
+});

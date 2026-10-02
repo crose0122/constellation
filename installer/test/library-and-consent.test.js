@@ -67,3 +67,15 @@ test("AI descriptions are off unless the family said yes", () => {
   assert.ok(names({ describe: true }).includes("tag"));
   assert.ok(names({ describe: true }).includes("describe"));
 });
+
+test("the model download does nothing without the family's yes", async () => {
+  // Mutation check (2026-10-02): the install-skip had no test.
+  const calls = [];
+  const rt = { installOllama: async () => calls.push("ollama"), pullModel: async () => calls.push("model") };
+  for (const cfg of [{}, { describe: false }, { describe: "yes" }, { describe: 1 }]) {
+    assert.deepEqual(await s.installVision({ ...cfg, model: "m" }, () => {}, rt), { ok: true, skipped: true });
+  }
+  assert.deepEqual(calls, [], "no Ollama, no model, no graphics card");
+  assert.deepEqual(await s.installVision({ describe: true, model: "m" }, () => {}, rt), { ok: true });
+  assert.deepEqual(calls, ["ollama", "model"]);
+});

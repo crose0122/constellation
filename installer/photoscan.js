@@ -88,6 +88,10 @@ async function walk(dir, ctx) {
     try {
       for (const ent of names) {
         if (++ctx.entries > ctx.maxEntries) { ctx.partial = true; break; }
+        // The budget is also enforced inside one folder: a single huge folder
+        // on a slow USB or network drive would otherwise run far past it (each
+        // photo costs a stat) while still reporting a complete scan.
+        if ((ctx.entries & 31) === 0 && ctx.outOfBudget()) { ctx.partial = true; break; }
         const full = path.join(cur, ent.name);
         if (ent.isDirectory()) {
           if (!skipDir(ent.name)) stack.push(full);

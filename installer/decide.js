@@ -42,6 +42,16 @@ function hardwareFloor(sys, drives, libraryRoot) {
 function normPath(p) {
   if (typeof p !== "string" || !p.trim()) return "";
   let s = p.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
+  // resolve "." and ".." so "/tmp/.." and "/." are the root they really are
+  if (s.startsWith("/") || /^[A-Za-z]:\//.test(s)) {
+    const drive = /^[A-Za-z]:/.test(s) ? s.slice(0, 2) : "";
+    const out = [];
+    for (const seg of s.slice(drive.length).split("/")) {
+      if (!seg || seg === ".") continue;
+      if (seg === "..") out.pop(); else out.push(seg);
+    }
+    s = drive + "/" + out.join("/");
+  }
   if (s.length > 1 && !/^[A-Za-z]:\/$/.test(s)) s = s.replace(/\/$/, "");
   return /^[A-Za-z]:/.test(s) ? s.toLowerCase() : s;   // Windows paths: case-insensitive
 }

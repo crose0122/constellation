@@ -32,12 +32,15 @@ async function finishInstall({ cfg, dataDir, backendDir, appDir, send, deps }) {
   // the CA it serves has to be the one this wizard just made in the library.
   if (serverUp && deps.servesOurCa) {
     let ours = false;
-    try { ours = await deps.servesOurCa("127.0.0.1", httpPort, deps.readOurCa()); }
-    catch { ours = false; }
-    if (!ours) {
-      serverUp = false;
-      readinessError = `Something else is answering on port ${httpPort}, not your new Constellation.`;
+    let ca = null;
+    try { ca = deps.readOurCa(); } catch { ca = null; }
+    if (ca == null) {
+      readinessError = "Constellation couldn't find its own family certificate, so it can't tell its server from another one.";
+    } else {
+      try { ours = await deps.servesOurCa("127.0.0.1", httpPort, ca); } catch { ours = false; }
+      if (!ours) readinessError = `Something else is answering on port ${httpPort}, not your new Constellation.`;
     }
+    if (!ours) serverUp = false;
   }
   let rollback = null;
   if (!serverUp && auto.ok && typeof auto.rollback === "function") {
