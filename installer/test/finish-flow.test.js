@@ -86,7 +86,7 @@ function identityHarness({ ours, cfg = {} }) {
     startBackgroundSweep: () => ({ ok: true, verified: false }),
     finishClaims: require("../decide").finishClaims,
   };
-  return { seen, run: () => finishInstall({ cfg, dataDir: "/data", backendDir: "/b", appDir: "/a",
+  return { seen, deps, run: () => finishInstall({ cfg, dataDir: "/data", backendDir: "/b", appDir: "/a",
     send: () => {}, deps }) };
 }
 
@@ -110,4 +110,14 @@ test("finish flow uses the picked ports everywhere and reports them", async () =
   assert.equal(r.httpPort, 8684);
   assert.equal(r.tlsPort, 8685);
   assert.match(h.seen.pem, /BEGIN CERTIFICATE/);
+});
+
+test("finish flow says the certificate is missing, not that something else answers", async () => {
+  const h = identityHarness({ ours: true });
+  const r = await finishInstall({ cfg: { httpPort: 8584, tlsPort: 8585 }, dataDir: "/data", backendDir: "/b",
+    appDir: "/a", send: () => {}, deps: { ...h.deps, readOurCa: () => { throw new Error("ENOENT"); } } });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /family certificate/);
+  assert.doesNotMatch(r.error, /Something else is answering/);
+  assert.equal(h.seen.rolledBack, true, "still fails closed and rolls back");
 });

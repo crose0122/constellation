@@ -298,7 +298,7 @@ const SCREENS = {
       ${target && !bkErr ? `<p class="msg ok">Backups go to ${esc(target)}. Constellation doesn't read photos from it.</p>` : ""}
       ${state.error ? `<p class="msg stop" role="alert">${esc(state.error)}</p>` : ""}`,
       details: () => target ? `Backup target: ${target}` : state.backupChoice === "skip" ? "No backup drive yet" : "Nothing chosen",
-      next: { label: "Start my sky", fn: () => startSky(), ok: () => pinOk() && !!state.backupChoice && !bkErr && (state.backupChoice !== "other" || !!state.backupOther) },
+      next: { label: "Start my sky", fn: () => startSky(), ok: () => D.startReady({ pinValid: pinOk(), backupChoice: state.backupChoice, bkErr, backupOther: state.backupOther }) },
       back: () => go("pin"),
       wire() {
         document.querySelectorAll("[data-bk]").forEach((r) => { r.onchange = () => { state.backupChoice = r.dataset.bk; state.error = null; render(); }; });

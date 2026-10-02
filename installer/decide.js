@@ -84,6 +84,13 @@ function validateLibraryRoot(root, { home, sources = [], backupTarget } = {}) {
   return null;
 }
 
+// "Start my sky" is only enabled when everything it needs is valid. The PIN
+// is cleared once handed to the backend, so without pinValid a retry after a
+// failed setup would send an empty one.
+function startReady({ pinValid, backupChoice, bkErr, backupOther }) {
+  return !!pinValid && !!backupChoice && !bkErr && (backupChoice !== "other" || !!backupOther);
+}
+
 const WALL_URL = "http://localhost:8484/wall";
 
 // The wall on the port this install actually got (main.js picks a free pair;
@@ -236,7 +243,7 @@ function finishCopy({ startsOnLogin, startsOnBoot, background, backgroundStarted
 
 const API = { MIN_RAM_GB, MIN_FREE_GB, hardwareFloor, pickDriveFor, recommendMode,
   storageMath, validatePin, validateBackupTarget, finishUrls, defaultSourceChecked,
-  finishClaims, finishCopy, isTrustedLocalUrl, WALL_URL, wallUrl, validateLibraryRoot };
+  finishClaims, finishCopy, isTrustedLocalUrl, WALL_URL, wallUrl, validateLibraryRoot, startReady };
 // Node (main process, tests) and the wizard page (plain <script>) share this file.
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 else if (typeof window !== "undefined") window.decide = API;

@@ -79,3 +79,22 @@ test("the model download does nothing without the family's yes", async () => {
   assert.deepEqual(await s.installVision({ describe: true, model: "m" }, () => {}, rt), { ok: true });
   assert.deepEqual(calls, ["ollama", "model"]);
 });
+
+test("library root: dot segments are resolved before the check", () => {
+  const o = { home: "/home/example" };
+  for (const r of ["/.", "/..", "/tmp/..", "/a/../..", "//", "C:\\x\\..\\..", "C:\\..", "c:/x/../..", "C:"]) {
+    assert.match(d.validateLibraryRoot(r, o), /whole drive/, r);
+  }
+  assert.match(d.validateLibraryRoot("/home/example/../example", o), /whole home folder/);
+  assert.equal(d.validateLibraryRoot("/home/example/./Pictures/../Constellation", o), null);
+});
+
+test("Start my sky needs a valid PIN, a backup choice and no backup error", () => {
+  const ok = { pinValid: true, backupChoice: "skip", bkErr: null, backupOther: "" };
+  assert.equal(d.startReady(ok), true);
+  assert.equal(d.startReady({ ...ok, pinValid: false }), false, "an empty PIN can never be sent");
+  assert.equal(d.startReady({ ...ok, backupChoice: null }), false);
+  assert.equal(d.startReady({ ...ok, bkErr: "same drive" }), false);
+  assert.equal(d.startReady({ ...ok, backupChoice: "other", backupOther: "" }), false);
+  assert.equal(d.startReady({ ...ok, backupChoice: "other", backupOther: "/mnt/b" }), true);
+});
