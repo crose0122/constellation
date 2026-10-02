@@ -33,13 +33,79 @@ function hardwareFloor(sys, drives, libraryRoot) {
   };
 }
 
+// --- where Constellation keeps its copy -------------------------------------
+// Constellation's library is its own folder. Never the home folder itself
+// (2026-10-02: a run picked ~ and scattered originals/, thumbnails/, .tls and
+// photos.db straight into it), never a whole drive, never overlapping a photo
+// folder it reads from, never on the backup drive. Plain string logic so the
+// wizard page and the main process share it (no Node path module here).
+function normPath(p) {
+  if (typeof p !== "string" || !p.trim()) return "";
+  let s = p.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
+  // resolve "." and ".." so "/tmp/.." and "/." are the root they really are
+  if (s.startsWith("/") || /^[A-Za-z]:\//.test(s)) {
+    const drive = /^[A-Za-z]:/.test(s) ? s.slice(0, 2) : "";
+    const out = [];
+    for (const seg of s.slice(drive.length).split("/")) {
+      if (!seg || seg === ".") continue;
+      if (seg === "..") out.pop(); else out.push(seg);
+    }
+    s = drive + "/" + out.join("/");
+  }
+  if (s.length > 1 && !/^[A-Za-z]:\/$/.test(s)) s = s.replace(/\/$/, "");
+  return /^[A-Za-z]:/.test(s) ? s.toLowerCase() : s;   // Windows paths: case-insensitive
+}
+function samePath(a, b) { return !!a && a === b; }
+function within(child, parent) {
+  if (!child || !parent) return false;
+  if (child === parent) return true;
+  const pre = parent.endsWith("/") ? parent : parent + "/";
+  return child.startsWith(pre);
+}
+function validateLibraryRoot(root, { home, sources = [], backupTarget } = {}) {
+  const r = normPath(root);
+  if (!r) return "Pick a place for Constellation's copy of your photos.";
+  if (r === "/" || /^[a-z]:\/?$/.test(r)) {
+    return "That's a whole drive. Pick or create a folder on it, like Constellation.";
+  }
+  if (samePath(r, normPath(home))) {
+    return "That's your whole home folder. Constellation needs a folder of its own inside it, like Home › Constellation.";
+  }
+  for (const src of sources || []) {
+    const sp = normPath(src);
+    if (sp && (within(r, sp) || within(sp, r))) {
+      return "That overlaps a folder your photos come from. Keep Constellation's copy somewhere separate, so your originals are never touched.";
+    }
+  }
+  const bp = normPath(backupTarget);
+  if (bp && (within(r, bp) || within(bp, r))) {
+    return "That's on your backup drive. Keep Constellation's copy on this computer and the backup on the drive.";
+  }
+  return null;
+}
+
+// "Start my sky" is only enabled when everything it needs is valid. The PIN
+// is cleared once handed to the backend, so without pinValid a retry after a
+// failed setup would send an empty one.
+function startReady({ pinValid, backupChoice, bkErr, backupOther }) {
+  return !!pinValid && !!backupChoice && !bkErr && (backupChoice !== "other" || !!backupOther);
+}
+
 const WALL_URL = "http://localhost:8484/wall";
+
+// The wall on the port this install actually got (main.js picks a free pair;
+// 8484 is only the first choice).
+function wallUrl(httpPort = 8484) {
+  if (!Number.isInteger(httpPort) || httpPort < 1024 || httpPort > 65535) return WALL_URL;
+  return `http://localhost:${httpPort}/wall`;
+}
 
 // Kept as a narrow pure decision for regression tests. This is deliberately a
 // byte-for-byte contract rather than URL parsing/canonicalization: alternate
 // schemes, hosts, case, ports, paths, escapes and URL metadata are all denied.
-function isTrustedLocalUrl(raw) {
-  return typeof raw === "string" && raw === WALL_URL;
+// The only accepted URL is the wall on this install's own port.
+function isTrustedLocalUrl(raw, httpPort = 8484) {
+  return typeof raw === "string" && raw === wallUrl(httpPort);
 }
 
 // Which source folders start ticked: the family's own photo folders, never a
@@ -177,7 +243,7 @@ function finishCopy({ startsOnLogin, startsOnBoot, background, backgroundStarted
 
 const API = { MIN_RAM_GB, MIN_FREE_GB, hardwareFloor, pickDriveFor, recommendMode,
   storageMath, validatePin, validateBackupTarget, finishUrls, defaultSourceChecked,
-  finishClaims, finishCopy, isTrustedLocalUrl, WALL_URL };
+  finishClaims, finishCopy, isTrustedLocalUrl, WALL_URL, wallUrl, validateLibraryRoot, startReady };
 // Node (main process, tests) and the wizard page (plain <script>) share this file.
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 else if (typeof window !== "undefined") window.decide = API;

@@ -1103,3 +1103,48 @@ test("Windows rollback attempts every cleanup and reports all failures", async (
   assert.equal(fs.existsSync(path.join(dataDir, "start-constellation.cmd")), false,
     "file cleanup still runs after command cleanup failures");
 });
+
+test("autostart carries the picked ports into the unit and the Windows launcher", () => {
+  const u = a.systemdUnit({ exe: "/opt/c/brain", envFile: "/h/.env", httpPort: 8584, tlsPort: 8585 });
+  assert.match(u, /--port 8584 --tls-port 8585/);
+  const l = a.windowsLauncher({ exe: "C:\\x\\brain.exe", env: {}, httpPort: 8684, tlsPort: 8685 });
+  assert.match(l, /--port 8684 --tls-port 8685/);
+});
+
+// 2026-10-02 clean-machine run: start-on-boot failed on stock Ubuntu 26.04
+// because verify reported a warning about an unrelated system unit.
+test("verify findings: unrelated system units are ignored, ours still fail closed", () => {
+  const unit = "/home/example/.config/systemd/user/constellation.service";
+  const stock = [
+    "/usr/lib/systemd/system/xfs_scrub_all.service:26: Support for option CPUAccounting= has been removed and it is ignored",
+    "/usr/lib/systemd/system/system-xfs_scrub.slice:15: Support for option CPUAccounting= has been removed and it is ignored",
+  ].join("\n");
+  assert.equal(a.verifyFindings(stock, unit), "");
+  const ours = `${unit}:12: Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.`;
+  assert.equal(a.verifyFindings(stock + "\n" + ours, unit), ours);
+  assert.equal(a.verifyFindings("Failed to load something important", unit), "Failed to load something important",
+    "a finding that names no file still counts");
+  assert.equal(a.verifyFindings("", unit), "");
+});
+
+test("installLinux writes the picked ports into the unit it actually installs", async () => {
+  // Mutation check (2026-10-02): dropping the ports here left every test green
+  // while the unit bound 8484/8485 and the firewall, readiness check and links
+  // used the picked pair.
+  const fs = require("fs"), os = require("os"), path = require("path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cst-linux-ports-"));
+  try {
+    const run = async (cmd, args) => {
+      if (cmd === "loginctl") return { ok: true, out: "", err: "" };
+      if (args.includes("is-enabled")) return { ok: false, out: "not-found\n", err: "" };
+      if (args.includes("is-active")) return { ok: true, out: "active\n", err: "" };
+      return { ok: true, out: "", err: "" };
+    };
+    const r = await a.installLinux({ exe: "/opt/c/brain", envFile: "/h/.env", httpPort: 8584, tlsPort: 8585 },
+      { run, home, user: "family" });
+    assert.equal(r.ok, true);
+    const unit = fs.readFileSync(path.join(home, ".config", "systemd", "user", a.UNIT), "utf8");
+    assert.match(unit, /--port 8584 --tls-port 8585/);
+    assert.doesNotMatch(unit, /--port 8484/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});

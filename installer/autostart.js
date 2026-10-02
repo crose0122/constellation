@@ -124,6 +124,21 @@ function windowsLauncher({ exe, env, httpPort = 8484, tlsPort = 8485 }) {
   return lines.join("\r\n") + "\r\n";
 }
 
+// systemd-analyze verify also loads the units ours depends on and reports
+// THEIR problems. Stock Ubuntu 26.04 prints
+//   /usr/lib/systemd/system/xfs_scrub_all.service:26: Support for option
+//   CPUAccounting= has been removed and it is ignored
+// which made start-on-boot fail on every clean install. A finding counts
+// unless it is a file:line report about a DIFFERENT unit file; anything that
+// names our unit, or names no file at all, still fails closed.
+function verifyFindings(stderr, unitPath) {
+  return String(stderr || "").split("\n").map((l) => l.trim()).filter(Boolean)
+    .filter((l) => {
+      const m = l.match(/^(\/\S+?):\d+:/);
+      return !m || m[1] === unitPath;
+    }).join("\n");
+}
+
 function fileSnapshot(file, io = fs) {
   return io.existsSync(file) ? io.readFileSync(file) : null;
 }
@@ -321,7 +336,7 @@ function firewallSnapshot(result) {
   return { known: false, error: `firewall snapshot query was ambiguous: ${message || "empty response"}` };
 }
 
-async function installLinux({ exe, envFile }, runtime = {}) {
+async function installLinux({ exe, envFile, httpPort = 8484, tlsPort = 8485 }, runtime = {}) {
   const rawRun = runtime.run || sh;
   const run = async (...args) => {
     try { return await rawRun(...args); }
@@ -361,16 +376,17 @@ async function installLinux({ exe, envFile }, runtime = {}) {
     return rollbackResult(errors);
   };
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(unitPath, systemdUnit({ exe, envFile }));
+  fs.writeFileSync(unitPath, systemdUnit({ exe, envFile, httpPort, tlsPort }));
   // Verify BEFORE enabling: systemd-analyze warns about an unknown key even
   // when it exits 0, and a warned unit can mean a protection that never runs
   // (StartLimitIntervalSec in the wrong section did exactly that). A silent
   // verify is the only "yes".
   const verify = await run("systemd-analyze", ["verify", unitPath]);
-  if (!verify.ok || verify.err.trim() !== "") {
+  const findings = verifyFindings(verify.err, unitPath);
+  if (!verify.ok || findings !== "") {
     const errors = [];
     restoreFile(unitPath, existing, errors, "restore unit");
-    return { ok: false, error: `systemd-analyze verify did not pass: ${verify.err.trim() || "exit nonzero"}` +
+    return { ok: false, error: `systemd-analyze verify did not pass: ${findings || "exit nonzero"}` +
       (errors.length ? `; rollback failed: ${errors.join("; ")}` : "") };
   }
   const steps = [
@@ -401,7 +417,7 @@ async function installLinux({ exe, envFile }, runtime = {}) {
     startsOnLogin: true, startsOnBoot: linger.ok, rollback };
 }
 
-async function installWindows({ exe, env, dataDir }, runtime = {}) {
+async function installWindows({ exe, env, dataDir, httpPort = 8484, tlsPort = 8485 }, runtime = {}) {
   const io = runtime.fs || fs;
   const rawRun = runtime.run || sh;
   const runCommand = async (...args) => {
@@ -458,7 +474,7 @@ async function installWindows({ exe, env, dataDir }, runtime = {}) {
   const user = runtime.user || `${process.env.USERDOMAIN || os.hostname()}\\${os.userInfo().username}`;
   // UTF-16LE with BOM, as schtasks expects for the encoding the XML declares
   try {
-    atomicWriteFile(launcher, windowsLauncher({ exe, env }), io);
+    atomicWriteFile(launcher, windowsLauncher({ exe, env, httpPort, tlsPort }), io);
     atomicWriteFile(xmlPath, Buffer.concat([Buffer.from([0xff, 0xfe]),
       Buffer.from(windowsTaskXml({ launcher, user }), "utf16le")]), io);
   } catch (e) {
@@ -482,7 +498,7 @@ async function installWindows({ exe, env, dataDir }, runtime = {}) {
   // Windows Firewall: private networks only (the family LAN), never public.
   if (!firewallExisted) {
     const fw = await runCommand("netsh", ["advfirewall", "firewall", "add", "rule", "name=Constellation",
-      "dir=in", "action=allow", "protocol=TCP", "localport=8484,8485", "profile=private"]);
+      "dir=in", "action=allow", "protocol=TCP", `localport=${httpPort},${tlsPort}`, "profile=private"]);
     firewallAdded = fw.ok;
     if (!fw.ok) {
       const rb = await rollback();
@@ -502,13 +518,14 @@ function parseEnvFile(text) {
   return env;
 }
 
-async function install({ exe, envFile, dataDir }) {
+async function install({ exe, envFile, dataDir, httpPort = 8484, tlsPort = 8485 }) {
   if (process.platform === "win32") {
-    return installWindows({ exe, dataDir, env: parseEnvFile(fs.readFileSync(envFile, "utf8")) });
+    return installWindows({ exe, dataDir, httpPort, tlsPort,
+      env: parseEnvFile(fs.readFileSync(envFile, "utf8")) });
   }
-  if (process.platform === "linux") return installLinux({ exe, envFile });
+  if (process.platform === "linux") return installLinux({ exe, envFile, httpPort, tlsPort });
   return { ok: false, error: "This system isn't supported yet (Linux and Windows are)." };
 }
 
-module.exports = { systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, installLinux, installWindows, mayWriteUnit,
+module.exports = { verifyFindings, systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, installLinux, installWindows, mayWriteUnit,
   scheduledTaskSnapshot, firewallSnapshot, parseTaskXml, decodeConsoleOutput, consoleCodePage, TASK_NAMESPACE, UNIT, TASK, MARKER };

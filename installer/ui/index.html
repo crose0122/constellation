@@ -5,82 +5,127 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>Constellation Setup</title>
 <style>
-  * { box-sizing: border-box; margin: 0; }
-  body { height: 100vh; overflow: hidden; color: #dfeefa;
-    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: radial-gradient(ellipse at 50% 0%, #0a1830 0%, #010409 60%);
-    display: flex; flex-direction: column; }
-  header { padding: 1.4rem 2rem 0.6rem; }
-  header h1 { font-size: 1.25rem; font-weight: 650; }
-  header .steps { display: flex; gap: 0.5rem; margin-top: 0.8rem; }
-  header .steps .s { flex: 1; height: 4px; border-radius: 2px; background: #1c3e60; }
-  header .steps .s.on { background: #49c6ff; }
-  header .steps .s.done { background: #5ec98f; }
-  main { flex: 1; overflow-y: auto; padding: 1.2rem 2rem; }
-  footer { padding: 1rem 2rem 1.4rem; display: flex; justify-content: space-between; align-items: center; }
-  button { font: inherit; cursor: pointer; border: 0; border-radius: 999px; padding: 0.6rem 1.5rem; font-weight: 600; }
-  .primary { background: #1e6fd0; color: #fff; }
-  .primary:disabled { background: #1c3e60; color: #5f7d95; cursor: default; }
-  .ghost { background: transparent; color: #8fd4ff; }
-  h2 { font-size: 1.1rem; margin-bottom: 0.3rem; }
-  p.sub { color: #7f9bb3; font-size: 0.85rem; margin-bottom: 1.1rem; line-height: 1.4; }
-  .card { background: #0a1420; border: 1px solid #1c3e60; border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 0.8rem; }
-  .card .row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; }
-  .card .row .k { color: #7f9bb3; }
-  .card .row .v { font-variant-numeric: tabular-nums; }
-  .rec { border-color: #2e6b4f; }
-  .rec.warn { border-color: #7a5c1e; }
-  .rec .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.05em; padding: 0.15rem 0.55rem; border-radius: 999px; }
-  .rec .badge.ok { background: #14532d; color: #bbf7d0; }
-  .rec .badge.warn { background: #4a3410; color: #fde68a; }
-  .list label { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0.2rem;
-    font-size: 0.88rem; border-bottom: 1px solid #10243a; }
-  .list label:last-child { border-bottom: 0; }
-  .list .meta { margin-left: auto; color: #5f7d95; font-size: 0.78rem; }
-  .pathrow { display: flex; gap: 0.5rem; align-items: center; }
-  .pathrow input { flex: 1; background: #06101c; border: 1px solid #1c3e60; color: #dfeefa;
-    border-radius: 8px; padding: 0.5rem 0.7rem; font: inherit; }
-  .track { height: 10px; background: #10243a; border-radius: 5px; overflow: hidden; margin: 0.3rem 0; }
-  .fill { height: 100%; width: 0%; background: #49c6ff; border-radius: 5px; transition: width 0.3s; }
-  .fill.done { background: #5ec98f; }
-  .muted { color: #5f7d95; font-size: 0.82rem; }
-  .spin { width: 34px; height: 34px; border: 3px solid #1c3e60; border-top-color: #49c6ff;
-    border-radius: 50%; animation: r 0.9s linear infinite; margin: 2rem auto; }
-  @keyframes r { to { transform: rotate(360deg); } }
-  .big { text-align: center; padding: 2rem 0; }
-  .big .icon { font-size: 3rem; }
-  code { background: #06101c; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
-  a { color: #8fd4ff; }
-  .problem { border-color: #7a2e2e; }
-  .problem p { color: #fecaca; margin: 0.2rem 0; }
-  .pinrow input { width: 100%; background: #06101c; border: 1px solid #1c3e60; color: #fff;
-    border-radius: 8px; padding: 0.55rem 0.7rem; font-size: 1.2rem; letter-spacing: 0.3em; margin-top: 0.4rem; }
-  .err { color: #fca5a5; font-size: 0.85rem; min-height: 1.2em; margin-top: 0.4rem; }
-  details.tech { margin-top: 1rem; }
-  details.tech summary { cursor: pointer; color: #8fd4ff; font-size: 0.85rem; }
-  #techlog { background: #020810; border: 1px solid #10243a; border-radius: 8px; padding: 0.6rem;
-    max-height: 160px; overflow: auto; font: 0.75rem/1.4 ui-monospace, monospace; color: #7f9bb3;
-    white-space: pre-wrap; margin-top: 0.5rem; }
-  .sky { position: relative; height: 180px; border-radius: 12px; overflow: hidden;
-    background: radial-gradient(ellipse at 50% 100%, #0a1830, #010409 70%); margin-bottom: 0.8rem; }
-  .sky i { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: #fff;
-    box-shadow: 0 0 6px #9fd8ff; animation: tw 2.4s ease-in-out infinite alternate; }
-  @keyframes tw { from { opacity: .35 } to { opacity: 1 } }
-  .count { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+  /* One question per screen (approved mock). Night-sky world:
+     a single deliberate dark theme. System fonts only — the installer is
+     offline and its content policy loads nothing from the network. */
+  :root {
+    color-scheme: dark;
+    --night: #050b16; --window: #0a1424; --panel: #0e1c30; --line: #1d3654;
+    --ink: #e4eef8; --dim: #8aa3bb; --faint: #5d7690;
+    --star: #8fd4ff; --go: #2a7ad8; --ok: #6fd3a0; --warn: #f2c36b; --stop: #ff9a8a;
+    --display: Georgia, "Times New Roman", serif;
+    --body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: grid; grid-template-rows: auto 1fr auto; color: var(--ink); font-family: var(--body);
+    font-size: 15px; line-height: 1.5; overflow: hidden;
+    background: radial-gradient(ellipse at 50% -10%, #0d2140 0%, var(--night) 55%), var(--night); }
+  .bar { display: flex; align-items: center; gap: 14px; padding: 16px 28px 0; }
+  .mark { width: 22px; height: 22px; flex: none; }
+  .bar h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  .steps { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--faint);
+    font-variant-numeric: tabular-nums; }
+  .steps i { width: 26px; height: 3px; border-radius: 2px; background: var(--line); display: block; }
+  .steps i.on { background: var(--star); } .steps i.done { background: var(--ok); }
+  main { overflow-y: auto; padding: 26px 28px 10px; display: grid; align-content: start; gap: 18px; min-width: 0; }
+  main:focus { outline: none; }
+  .q { font-family: var(--display); font-weight: 400; font-size: 36px; line-height: 1.1; margin: 0; }
+  .lede { margin: -6px 0 0; color: var(--dim); max-width: 62ch; }
+  .quiet { color: var(--faint); font-size: 13px; margin: 0; max-width: 66ch; }
+  .mono { font-family: var(--mono); font-size: 13px; }
+  .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .choice { text-align: left; font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 22px; cursor: pointer; display: grid; gap: 8px; min-width: 0;
+    transition: border-color .15s, transform .15s; }
+  .choice:hover:not(:disabled), .choice:focus-visible { border-color: var(--star); transform: translateY(-1px); outline: none; }
+  .choice:disabled { opacity: .5; cursor: default; }
+  .choice .t { font-size: 19px; font-weight: 600; } .choice .d { color: var(--dim); font-size: 14px; }
+  .choice svg { width: 34px; height: 34px; }
+  .found { display: grid; gap: 10px; }
+  .folder { display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: center; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; cursor: pointer; }
+  .folder:has(input:checked) { border-color: color-mix(in srgb, var(--star) 70%, var(--line)); }
+  .folder input { width: 20px; height: 20px; accent-color: var(--star); margin: 0; }
+  .folder .name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .folder .name small { display: block; font-weight: 400; color: var(--dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .folder .why { display: block; color: var(--ok); font-size: 12.5px; font-weight: 500; margin-top: 2px; }
+  .thumbs { display: flex; gap: 4px; }
+  .thumbs img { width: 46px; height: 46px; border-radius: 6px; display: block; object-fit: cover; background: var(--line); }
+  .big-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; max-width: 600px; }
+  .big-thumbs img { width: 100%; aspect-ratio: 1; border-radius: 8px; display: block; object-fit: cover; background: var(--line); }
+  .total { font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+  .scan { display: grid; gap: 14px; justify-items: start; }
+  .scanline { font-variant-numeric: tabular-nums; color: var(--dim); margin: 0; }
+  .meter { width: min(520px, 100%); height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .meter span { display: block; height: 100%; width: 30%; background: var(--star); animation: slide 1.4s ease-in-out infinite; }
+  .meter.fill span { animation: none; width: 0; transition: width .3s; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  .path { display: flex; gap: 8px; align-items: center; background: #06101e; border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; min-width: 0; max-width: 600px; }
+  .path .mono { overflow-wrap: anywhere; min-width: 0; }
+  .opts { display: grid; gap: 8px; max-width: 560px; }
+  .opt { display: flex; gap: 10px; align-items: flex-start; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+  .opt input { accent-color: var(--star); margin-top: 4px; }
+  .opt span small { display: block; color: var(--dim); font-size: 13px; }
+  .msg { border-radius: 10px; padding: 12px 14px; font-size: 14px; max-width: 600px; border: 1px solid; margin: 0; }
+  .msg.stop { color: var(--stop); border-color: color-mix(in srgb, var(--stop) 45%, transparent); background: color-mix(in srgb, var(--stop) 8%, transparent); }
+  .msg.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 7%, transparent); }
+  .msg.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: color-mix(in srgb, var(--ok) 7%, transparent); }
+  .promise { display: flex; gap: 10px; align-items: center; color: var(--ok); font-weight: 500; margin: 0; }
+  .pin { display: flex; gap: 10px; flex-wrap: wrap; }
+  .pin input { width: 11ch; font-family: var(--mono); font-size: 22px; letter-spacing: .3em; text-align: center;
+    background: #06101e; border: 1px solid var(--line); color: var(--ink); border-radius: 10px; padding: 12px; }
+  .pin input:focus { outline: 2px solid var(--star); outline-offset: 1px; }
+  .field { display: grid; gap: 6px; max-width: 520px; } .field label { font-size: 13px; color: var(--dim); }
+  .filling { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+  .mini { width: 100%; aspect-ratio: 16 / 10; border-radius: 12px; border: 1px solid var(--line); background: #030812; display: block; }
+  .count { font-family: var(--display); font-size: 40px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .links { display: grid; gap: 10px; }
+  .link { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; min-width: 0; }
+  .link .k { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); }
+  .link .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .link .row .mono { overflow-wrap: anywhere; min-width: 0; }
+  .copy, .linkbtn { font: inherit; font-size: 12px; color: var(--star); background: transparent; border: 1px solid var(--line);
+    border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+  .optin { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: var(--panel); border: 1px dashed var(--line);
+    border-radius: 10px; padding: 12px 14px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 13px; background: transparent; color: var(--dim); border: 0; padding: 5px 12px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--line); color: var(--ink); }
+  .seg button:disabled { cursor: default; }
+  footer.nav { display: flex; align-items: flex-end; gap: 12px; padding: 12px 28px 18px; border-top: 1px solid #ffffff08; }
+  details { font-size: 13px; color: var(--faint); min-width: 0; flex: 1; }
+  details summary { cursor: pointer; }
+  details pre { margin: 8px 0 0; font-family: var(--mono); font-size: 12px; color: var(--dim); white-space: pre-wrap;
+    overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
+  .btn { font: inherit; font-weight: 600; border-radius: 999px; padding: 10px 22px; cursor: pointer; border: 1px solid transparent; white-space: nowrap; }
+  .btn.go { background: var(--go); color: #fff; }
+  .btn.go:disabled { background: var(--line); color: var(--faint); cursor: default; }
+  .btn.back { background: transparent; color: var(--dim); border-color: var(--line); }
+  .btn[hidden] { display: none; }
+  .btn:focus-visible, .choice:focus-visible, .folder:focus-within, .copy:focus-visible { outline: 2px solid var(--star); outline-offset: 2px; }
+  @media (max-width: 760px) {
+    .folder { grid-template-columns: auto 1fr; } .folder .thumbs { grid-column: 1 / -1; }
+    .filling { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
-<header>
-  <h1>🌌 Constellation Setup</h1>
-  <div class="steps" id="steps"></div>
+<header class="bar">
+  <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16 L9 7 L14 12 L20 5" fill="none" stroke="#8fd4ff" stroke-width="1.4" stroke-linejoin="round"/><circle cx="4" cy="16" r="1.8" fill="#e4eef8"/><circle cx="9" cy="7" r="1.8" fill="#e4eef8"/><circle cx="14" cy="12" r="2.4" fill="#f2c36b"/><circle cx="20" cy="5" r="1.8" fill="#e4eef8"/></svg>
+  <h1>Constellation Setup</h1>
+  <div class="steps" id="steps" aria-label="Progress"></div>
 </header>
-<main id="main"></main>
-<details class="tech" id="techBox" style="padding:0 2rem"><summary>Show details</summary>
-  <div id="techPanel"></div><pre id="techlog"></pre></details>
-<footer>
-  <button class="ghost" id="back" style="visibility:hidden">← Back</button>
-  <button class="primary" id="next">Next →</button>
+<main id="main" tabindex="-1" aria-live="polite"></main>
+<footer class="nav">
+  <details id="details"><summary>Show details</summary><pre id="detailText"></pre></details>
+  <button class="btn back" id="extra" type="button" hidden></button>
+  <button class="btn back" id="back" type="button" hidden>Back</button>
+  <button class="btn go" id="next" type="button" hidden>Continue</button>
 </footer>
 <script src="../decide.js"></script>
 <script src="wizard.js"></script>

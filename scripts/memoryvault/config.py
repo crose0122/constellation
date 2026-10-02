@@ -43,6 +43,14 @@ NSFW_ONNX_PATH = os.environ.get("MEMORYVAULT_NSFW_ONNX_PATH", "")
 SCREEN_T_LOW = float(os.environ.get("MEMORYVAULT_SCREEN_T_LOW", "0.05"))
 SCREEN_T_HIGH = float(os.environ.get("MEMORYVAULT_SCREEN_T_HIGH", "0.85"))
 
+# The vision model (Ollama) runs on the graphics card for hours on a big
+# library, so it is opt-in: the installer sets MEMORYVAULT_VISION=off unless
+# the family said yes to "Describe your photos". Off means no stage ever
+# calls the model — screening sends its borderline photos to grown-up review
+# instead, and tag/describe/vision curation skip.
+VISION_ENABLED = os.environ.get("MEMORYVAULT_VISION", "on").strip().lower() not in (
+    "off", "0", "false", "no")
+
 # Dedup
 NEAR_DUP_THRESHOLD = int(os.environ.get("MEMORYVAULT_NEAR_DUP_THRESHOLD", "10"))
 

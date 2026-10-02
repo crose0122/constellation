@@ -161,17 +161,23 @@ def screen_verdict(
     confirm_fn=confirm_explicit,
     t_low: float | None = None,
     t_high: float | None = None,
+    vision: bool | None = None,
 ) -> tuple[str, float | None]:
     """Pure decision logic (unit-testable with fake classifiers).
     Returns (verdict, pass1_score)."""
     t_low = config.SCREEN_T_LOW if t_low is None else t_low
     t_high = config.SCREEN_T_HIGH if t_high is None else t_high
+    vision = config.VISION_ENABLED if vision is None else vision
     try:
         s = score_fn(path)
     except ScreenError as e:
         return ERROR, None
     if s < t_low:
         return SAFE, s
+    if not vision:
+        # No confirmation model allowed on this install: a borderline photo is
+        # a grown-up's call. Hidden until reviewed — never shown on a guess.
+        return REVIEW, s
     try:
         explicit = confirm_fn(path)
     except ScreenError:

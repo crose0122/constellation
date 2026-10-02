@@ -1,7 +1,9 @@
 // Drive the PACKAGED installer (dist/linux-unpacked) with Playwright's Electron
-// support: welcome -> real system scan -> storage (validation errors, then a
-// valid PIN + backup) -> screenshots. Stops before Downloads (that pulls 6 GB
-// and installs Ollama system-wide). Isolated HOME so nothing real is touched.
+// support through the one-question-per-screen flow: scan for photos
+// -> where to keep the copy (refusals, then the default) -> PIN (refusals) ->
+// backup -> Start my sky, with the real backend preparing the library and
+// running the first sweep. Isolated HOME and fake drives so nothing real is
+// read or touched; Ollama, the login service and the server start are stubbed.
 const path = require("path"), fs = require("fs"), os = require("os");
 const OUT = process.argv[2];
 const results = [];
@@ -53,73 +55,104 @@ async function runWizard(electron, home, track) {
     app = await electron.launch({ executablePath: exe, args: ["--no-sandbox"], env });
     track(app);
   }
-  // Never let a test reach the real Ollama: replace the download handler in
-  // the app's main process before the wizard can call it.
+  // Never let a test reach the real Ollama, install a login service or leave
+  // a server running: stub those IPC handlers in the app's main process.
   await app.evaluate(({ ipcMain }) => {
-    ipcMain.removeHandler("install");
-    ipcMain.handle("install", async () => ({ ok: false, error: "downloads disabled in this test" }));
-  });
-  const w = await app.firstWindow();
-  await w.waitForSelector("text=Welcome to Constellation");
-  check("welcome screen", await w.isVisible("text=Nothing is sent to anyone"));
-  await w.screenshot({ path: `${OUT}/w1-welcome.png` });
-
-  await w.click("#next");
-  await w.waitForSelector("text=Here's what I found", { timeout: 60000 });
-  const body = await w.innerText("main");
-  check("scan says no GPU needed", /doesn't need a graphics card/.test(body));
-  check("scan shows memory + free space", /Memory/.test(body) && /Free space for photos/.test(body));
-  await w.screenshot({ path: `${OUT}/w2-scan.png` });
-
-  await w.click("text=Show details");
-  check("Show details pane", await w.isVisible("#techPanel >> text=AI model"));
-  await w.click("text=Show details");
-
-  if (await w.isEnabled("#next")) {
-    await w.click("#next");
-    await w.waitForSelector("text=Where should your photos live?");
-    // library on the big data disk (the default under $HOME is on the small root disk here)
-    await w.fill("#lib", (process.env.E2E_LIB || "/tmp/cst-e2e-lib"));
-    await w.dispatchEvent("#lib", "change");
-    await w.fill("#pin1", "1111"); await w.fill("#pin2", "1111");
-    await w.click("#next");
-    await w.waitForTimeout(400);
-    check("weak PIN refused", /less easy to guess/.test(await w.innerText("#pinErr")));
-    check("missing backup refused", /Pick a drive for backups/.test(await w.innerText("#bkErr")));
-    const math = await w.innerText("#math");
-    check("storage math in plain words", /GB free holds about .* photos/.test(math), math);
-    await w.fill("#pin1", "4827"); await w.fill("#pin2", "4828");
-    await w.click("#next"); await w.waitForTimeout(300);
-    check("mismatched PIN refused", /don't match/.test(await w.innerText("#pinErr")));
-    check("still on storage (nothing written)", await w.isVisible("text=Where should your photos live?"));
-    await w.screenshot({ path: `${OUT}/w3-storage-errors.png`, fullPage: true });
-    const backup = await w.$('[data-bk]');
-    check("a backup drive is offered", !!backup);
-    const backupPath = backup ? await backup.getAttribute("data-bk") : "";
-    const srcTicked = backupPath ? await w.$(`[data-src="${backupPath}"]:checked`) : null;
-    check("removable drive not pre-ticked as a photo source", !srcTicked);
-    if (backup) {
-      await backup.check();
-      await w.fill("#pin1", "4827"); await w.fill("#pin2", "4827");
-      await w.click("#next");
-      await w.waitForSelector("text=Downloading", { timeout: 60000 }).catch(async (e) => {
-        console.log("  pinErr:", await w.innerText("#pinErr").catch(() => "?"), "| bkErr:", await w.innerText("#bkErr").catch(() => "?"), "| libErr:", await w.innerText("#libErr").catch(() => "?"));
-        throw e;
-      });
-      await w.waitForSelector("text=downloads disabled in this test", { timeout: 20000 });
-      check("valid PIN + backup -> prepare ran -> Downloads step", true);
-      const lib = (process.env.E2E_LIB || "/tmp/cst-e2e-lib");
-      check("PIN hash written in the chosen library", fs.existsSync(`${lib}/.auth/pin.json`) &&
-        !fs.readFileSync(`${lib}/.auth/pin.json`, "utf8").includes("4827"));
-      check("family certificate in the chosen library", fs.existsSync(`${lib}/.tls/ca.pem`));
-      const env = fs.readFileSync(`${home}/Constellation/.env`, "utf8");
-      check("config names the selected backup drive, not the PIN", env.includes(`BACKUP_TARGET=${backupPath}`) && !env.includes("4827"));
-      check("config points at the bundled screener", /NSFW_ONNX_PATH=.*resources\/models\/nsfw-screen\.onnx/.test(env));
-      await w.screenshot({ path: `${OUT}/w4-downloads.png` });
+    for (const ch of ["install", "enableDescribe"]) {
+      ipcMain.removeHandler(ch);
+      ipcMain.handle(ch, async () => ({ ok: false, error: "downloads disabled in this test" }));
     }
-  } else {
-    check("scan allowed continuing", false, "next disabled (RAM floor?)");
-  }
+    ipcMain.removeHandler("finish");
+    ipcMain.handle("finish", async () => ({ ok: false, headline: "Constellation didn't start.",
+      error: "server start disabled in this test" }));
+  });
+  // Only the synthetic HOME is ever scanned: fake drives (a big local disk and
+  // a USB drive that does not exist), never this machine's real mounts.
+  await app.evaluate(({ nativeImage }, home) => {
+    const cache = process.mainModule.constructor._cache;
+    const key = Object.keys(cache).find((k) => /[\\/]scan\.js$/.test(k) && !k.includes("node_modules"));
+    const scan = cache[key].exports;
+    const fake = [{ path: "/", freeGB: 900, totalGB: 1000, type: "fixed" },
+      { path: "/media/test/USB", label: "USB", freeGB: 1800, totalGB: 2000, removable: true, type: "removable" }];
+    scan.scanStorage = async () => ({ drives: fake, photoCandidates: [] });
+    const orig = scan.fullScan;
+    scan.fullScan = async () => { const r = await orig(); r.storage = { drives: fake, photoCandidates: [] }; return r; };
+    // synthetic photos: noisy JPEGs well over the scan's 40 KB photo floor
+    const req = process.mainModule.require.bind(process.mainModule); const fs = req("fs"), path = req("path");
+    const dir = path.join(home, "Pictures", "Family");
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < 24; i++) {
+      const w = 480, h = 360, buf = Buffer.alloc(w * h * 4);
+      for (let p = 0; p < buf.length; p += 4) { buf[p] = (p * (i + 3)) % 251; buf[p + 1] = (p >> 7) % 253; buf[p + 2] = (i * 37 + (p >> 3)) % 255; buf[p + 3] = 255; }
+      fs.writeFileSync(path.join(dir, `IMG_${1000 + i}.jpg`), nativeImage.createFromBitmap(buf, { width: w, height: h }).toJPEG(92));
+    }
+    fs.mkdirSync(path.join(home, "backup"), { recursive: true });
+  }, home);
+  const w = await app.firstWindow();
+  await w.reload();
+  const dialogAnswer = (p) => app.evaluate(({ dialog }, p) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [p] }); }, p);
+
+  await w.waitForSelector("text=Where are your photos?");
+  check("first screen asks one question with two choices",
+    await w.isVisible("text=Let's scan for your photos") && await w.isVisible("text=I'll pick a folder"));
+  await w.screenshot({ path: `${OUT}/w1-where.png` });
+
+  await w.click("#cScan");
+  await w.waitForSelector("text=We found photos", { timeout: 60000 });
+  const found = await w.innerText("#main");
+  check("scan found the Pictures folder with its photos", /Pictures[\s\S]*24 photos/.test(found), found.slice(0, 160));
+  check("Pictures pre-ticked with the reason shown", /Ticked because this is where your computer keeps photos/.test(found));
+  check("scan never listed a real drive", !/Drive\b/.test(found));
+  await w.screenshot({ path: `${OUT}/w2-found.png` });
+  await w.click("#next");
+
+  await w.waitForSelector("text=Where should Constellation keep its copy?");
+  await dialogAnswer(path.join(home, "Pictures"));
+  await w.click("#k2");
+  await w.waitForSelector("text=overlaps a folder your photos come from");
+  check("library inside a photo folder is refused", await w.isDisabled("#next"));
+  await w.click("#k1");
+  await w.waitForFunction(() => !document.getElementById("next").disabled);
+  check("the default new folder is accepted", true);
+  await w.screenshot({ path: `${OUT}/w3-keep.png` });
+  await w.click("#next");
+
+  await w.waitForSelector("text=Pick a family PIN.");
+  const typePin = async (a, b) => { await w.fill("#pin1", a); await w.dispatchEvent("#pin1", "input");
+    await w.fill("#pin2", b); await w.dispatchEvent("#pin2", "input"); };
+  await typePin("1111", "1111");
+  check("weak PIN refused", /less easy to guess/.test(await w.innerText("#pinmsg")) && await w.isDisabled("#next"));
+  await typePin("4827", "4828");
+  check("mismatched PIN refused", /don't match/.test(await w.innerText("#pinmsg")) && await w.isDisabled("#next"));
+  await typePin("4827", "4827");
+  await w.click("#next");
+
+  await w.waitForSelector("text=Pick a backup drive.");
+  await w.click("#bSkip");
+  check("skipping the backup states the consequence", await w.isVisible("text=your sky has one copy"));
+  const backupPath = path.join(home, "backup");
+  await dialogAnswer(backupPath);
+  await w.click("#bOther");
+  await w.waitForSelector("text=Backups go to");
+  await w.screenshot({ path: `${OUT}/w4-backup.png` });
+  await w.click("#next");                                   // Start my sky
+
+  await w.waitForSelector("text=server start disabled in this test", { timeout: 120000 });
+  check("prepare + first sweep ran, then the (stubbed) server start was reported honestly", true);
+  const lib = path.join(home, "Constellation", "library");
+  check("PIN hash written in the library, never the PIN",
+    fs.existsSync(`${lib}/.auth/pin.json`) && !fs.readFileSync(`${lib}/.auth/pin.json`, "utf8").includes("4827"));
+  check("family certificate in the library", fs.existsSync(`${lib}/.tls/ca.pem`));
+  const cfgText = fs.readFileSync(path.join(home, "Constellation", ".env"), "utf8");
+  check("config names the chosen backup and the photo source, not the PIN",
+    cfgText.includes(`BACKUP_TARGET=${backupPath}`) && cfgText.includes(`SOURCES=${path.join(home, "Pictures")}`) && !cfgText.includes("4827"));
+  check("AI descriptions are off unless the family said yes", /^MEMORYVAULT_VISION=off$/m.test(cfgText));
+  check("config points at the bundled screener", /NSFW_ONNX_PATH=.*resources\/models\/nsfw-screen\.onnx/.test(cfgText));
+  const originals = fs.existsSync(`${lib}/originals`) ? fs.readdirSync(`${lib}/originals`, { recursive: true }).length : 0;
+  check("the first sweep brought photos into the library", originals > 0, `${originals} entries`);
+  check("the originals are untouched", fs.readdirSync(path.join(home, "Pictures", "Family")).length === 24);
+  await w.screenshot({ path: `${OUT}/w5-sky-stubbed.png` });
 }
 
 module.exports = { isSandboxLaunchError };

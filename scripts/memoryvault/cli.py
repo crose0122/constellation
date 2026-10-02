@@ -75,7 +75,19 @@ def cmd_screen(args):
             print(screen(conn))
 
 
+def _vision_off(stage: str) -> bool:
+    """True (and says so) when this install has the vision model switched off."""
+    from . import config
+    if config.VISION_ENABLED:
+        return False
+    print({"skipped": stage, "reason": "vision model is off on this install "
+           "(MEMORYVAULT_VISION=off); turn on 'Describe your photos' to run it"})
+    return True
+
+
 def cmd_tag(args):
+    if _vision_off("tag"):
+        return
     from .tag import tag
 
     with _conn() as conn:
@@ -84,6 +96,8 @@ def cmd_tag(args):
 
 
 def cmd_describe(args):
+    if _vision_off("describe"):
+        return
     from .describe import describe
 
     with _conn() as conn:
@@ -141,6 +155,10 @@ def cmd_curate(args):
     from .curate import (curate, exclude_path, live_photos, rescue,
                          screen_captures, screenshots, vision_docs)
 
+    vision_pass = any(getattr(args, k, False) for k in
+                      ("vision_docs", "screenshots", "rescue", "screen_captures"))
+    if vision_pass and _vision_off("curate (vision pass)"):
+        return
     with _conn() as conn:
         if getattr(args, "vision_docs", False):
             print(vision_docs(conn, shard=args.shard, limit=args.limit))

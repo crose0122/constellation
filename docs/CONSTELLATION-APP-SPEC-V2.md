@@ -79,7 +79,7 @@ v2 makes it **installable by any family and self-sustaining once installed**:
 ## 3. Install & first run (Part A)
 
 ### 3.1 The wizard
-Six steps, both tiers in one binary: **Welcome → System scan → Storage & sources → Downloads → First sweep → Finish.** Simple path is fully hand-held (plain words, one decision per screen, every default pre-chosen sensibly). "Show details" reveals the technical pane (paths, model choice, log tail) for techy users. No terminal, ever.
+One plain question per screen (redesign approved 2026-10-02): **Where are your photos? → Where should Constellation keep its copy? → Pick a family PIN → Pick a backup drive → Your sky is filling up.** The first screen offers two choices: *Let's scan for your photos* (a read-only search of the home folder and attached drives that shows each place found with its photo count, years and sample thumbnails; Pictures is pre-ticked with the reason on screen) or *I'll pick a folder* (which shows a dozen photos from it so the family can check it is the right one). The copy always goes in a dedicated new folder — never the home folder itself, a whole drive, inside a photo folder or on the backup drive — and the originals are never moved. Nothing is written until *Start my sky*. The last screen shows this install's own TV and phone links (its server is verified by its family certificate, on free ports) and offers AI photo descriptions, default *Not now*: they need a 6 GB download and use the graphics card or processor overnight, so they never run without an explicit yes. "Show details" reveals the technical facts and a log tail. No terminal, ever.
 
 ### 3.2 Platforms (A2)
 - Linux: AppImage + a systemd user-unit story for the server (v1 pattern continues).
@@ -93,7 +93,7 @@ Minimum: any spare PC with ≥8 GB RAM and ~200 GB free. **No GPU required** —
 Auto-update inside a maintenance window — default **3–5 AM**, configurable. The display client reconnects itself after updates (existing self-heal). A manual "check for updates" button remains.
 
 ### 3.5 Data safety (A5)
-Backup/restore ships in v2: library + database to a dedicated external drive. Because of C4 (the server becomes the only copy of freed-space photos), backup is **mandatory**, not optional — the wizard walks it. Move-to-new-box migration and polished uninstall → v2.1.
+Backup/restore ships in v2: library + database to a dedicated external drive. Because of C4 (the server becomes the only copy of freed-space photos), the wizard walks the backup step and recommends a drive strongly. **Product decision 2026-10-02:** the family may choose *Skip for now*; the screen then states the consequence plainly (one copy, on this computer, lost if its drive fails; originals untouched). Open: the app should keep reminding until a drive is added — not built yet. Move-to-new-box migration and polished uninstall → v2.1.
 
 ### 3.6 Who can reach what (A6)
 - **Open surfaces** (no login): wall, Memories, ambient — a picture frame never asks for a password.
@@ -138,7 +138,7 @@ One companion app, shared sync core, two platforms:
 - "Free up space" flow in the app: "1,214 photos safely on Constellation — tap to free 8.2 GB."
 - Edits arrive as new versions; originals kept.
 - Junk control (B4 parked flow, culls) is a deliberate adult action behind the PIN — never a side effect of a phone wipe.
-- Consequence: A5 backup is mandatory (§3.5).
+- Consequence: A5 backup is strongly recommended and walked by the wizard; skipping is allowed with the consequence stated (§3.5, product decision 2026-10-02).
 
 ### 5.3 Boundaries (C5–C6)
 - Wi-Fi-only in v2; nothing exposed to the internet; remote sync parked.

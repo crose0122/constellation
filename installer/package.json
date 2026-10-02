@@ -40,6 +40,8 @@
       "scan.js",
       "setup.js",
       "finish-install.js",
+      "network.js",
+      "photoscan.js",
       "decide.js",
       "autostart.js",
       "debuglog.js",
