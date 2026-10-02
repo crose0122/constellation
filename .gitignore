@@ -7,3 +7,6 @@ venv/
 # PyInstaller build output
 scripts/build/
 scripts/dist/
+
+# make_launcher_art.py --preview
+build/

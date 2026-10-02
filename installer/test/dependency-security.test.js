@@ -106,7 +106,8 @@ test("Electron Builder 26 accepts the checked-in packaging configuration", async
   try {
     const config = await getConfig(root, null, {});
     await validateConfiguration(config, new builderUtil.DebugLogger(false));
-    assert.deepEqual(config.linux.target, ["AppImage"]);
+    assert.deepEqual(config.linux.target, ["deb", "AppImage"]);
+    assert.deepEqual(config.deb.depends, ["apparmor"]);
     assert.deepEqual(config.win.target, ["nsis"]);
     assert.equal(config.extraResources.length, 2);
   } finally {

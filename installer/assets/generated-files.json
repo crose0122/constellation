@@ -1,0 +1,7 @@
+[
+  { "path": "decide.js", "stage": "commit-time" },
+  { "path": "autostart.js", "stage": "commit-time" },
+  { "path": "models/models.json", "stage": "commit-time" },
+  { "path": "../scripts/dist/memoryvault-brain", "stage": "pack-time" },
+  { "path": "models/nsfw-screen.onnx", "stage": "pack-time" }
+]

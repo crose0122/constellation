@@ -9,9 +9,12 @@ newline-delimited file and set ``CONSTELLATION_PRIVATE_DENYLIST`` to its path.
     python3 tools/leak_scan.py
     python3 tools/leak_scan.py --require-private-denylist
     python3 tools/leak_scan.py --state worktree
+    python3 tools/leak_scan.py --messages A..B   # commit messages in a range
+    python3 tools/leak_scan.py --pushed REMOTE   # pre-push: stdin push lines
     python3 tools/leak_scan.py FILE [FILE ...]
 """
 
+import codecs
 import os
 import re
 import subprocess
@@ -495,7 +498,9 @@ def _git(root: Path, *args: str) -> bytes:
 
 
 def _git_blob(root: Path, object_id: bytes) -> bytes:
-    return _git(root, "cat-file", "blob", object_id.decode("ascii"))
+    # Stored bytes only: a local refs/replace entry must not swap in clean
+    # content for a blob that is actually committed (and pushed).
+    return _git(root, "--no-replace-objects", "cat-file", "blob", object_id.decode("ascii"))
 
 
 def scan_git_state(
@@ -603,6 +608,259 @@ def scan_git_state(
     return hits, scanned
 
 
+_HEX_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def _raw_git(root: Path, *args: str) -> bytes:
+    """Read objects as stored: replace refs must not substitute content."""
+    return _git(root, "--no-replace-objects", *args)
+
+
+def _commit_message(root: Path, commit: str, label: str) -> tuple[bytes | None, str | None]:
+    """Return the stored message bytes (decoded to UTF-8 when declared)."""
+    raw = _raw_git(root, "cat-file", "commit", commit)
+    headers, separator, message = raw.partition(b"\n\n")
+    if not separator:
+        return b"", None
+    declared = [header[len(b"encoding "):].decode("ascii", "replace").strip()
+                for header in headers.split(b"\n") if header.startswith(b"encoding ")]
+    if len(declared) > 1:
+        return None, f"{label}: undecodable commit message"
+    encoding = declared[0] if declared else None
+    if not encoding or encoding.lower().replace("_", "-") in {"utf-8", "utf8"}:
+        return message, None
+    try:
+        codecs.lookup(encoding)
+        return message.decode(encoding).encode("utf-8", "surrogateescape"), None
+    except (LookupError, UnicodeError, ValueError):
+        return None, f"{label}: undecodable commit message"
+
+
+def _scan_commit_messages(root: Path, commits, terms) -> tuple[list[str], int]:
+    hits: list[str] = []
+    count = 0
+    for commit in commits:
+        label = f"message:{commit[:12]}"
+        try:
+            message, problem = _commit_message(root, commit, label)
+        except (GitScanError, subprocess.SubprocessError, OSError) as exc:
+            hits.append(f"{label}: commit read failed ({exc})")
+            count += 1
+            continue
+        if problem:
+            hits.append(problem)
+        else:
+            hits.extend(scan_bytes(label, message, terms))
+        count += 1
+    return hits, count
+
+
+def scan_messages(
+    range_spec: str,
+    root: Path | str = ".",
+    deny_terms: Iterable[str] = (),
+) -> tuple[list[str], int]:
+    """Scan every commit message (subject + body) in a revision range.
+
+    A commit can reintroduce private text in its MESSAGE while the tree stays
+    clean, and a pushed message is as public as a blob. Messages are read
+    from the stored commit objects (not ``git log`` output, which stops at a
+    NUL, follows replace refs, and re-encodes), then get the same byte-level
+    rules as a file. Findings are labelled by commit id and never print the
+    matched text.
+    """
+    if not range_spec or range_spec.startswith("-"):
+        return ["messages: invalid revision range"], 0
+    try:
+        commits = _raw_git(
+            Path(root), "rev-list", "--end-of-options", range_spec, "--",
+        ).decode("ascii").split()
+    except (GitScanError, subprocess.SubprocessError, OSError, UnicodeError) as exc:
+        return [f"messages: git discovery failed ({exc})"], 0
+    return _scan_commit_messages(Path(root), commits, tuple(deny_terms))
+
+
+def _remote_heads(root: Path, remote: str) -> list[str] | None:
+    """Branch and tag tips the remote itself reports (``git ls-remote``).
+
+    Local ``refs/remotes`` are not trusted: they can be stale (a branch
+    withdrawn from the remote) or match another remote by prefix. Returns
+    None when the remote cannot be asked, and callers then exclude nothing.
+    """
+    try:
+        listing = _git(root, "ls-remote", "--heads", "--tags", "--refs",
+                       "--end-of-options", remote)
+    except GitScanError:
+        return None
+    heads = []
+    for line in listing.decode("utf-8", "surrogateescape").splitlines():
+        object_id = line.split("\t", 1)[0]
+        if _HEX_OBJECT_ID.fullmatch(object_id):
+            heads.append(object_id)
+    return heads
+
+
+def _existing_commits(root: Path, object_ids: Iterable[str]) -> list[str]:
+    present = []
+    for object_id in object_ids:
+        if not object_id or set(object_id) == {"0"} or not _HEX_OBJECT_ID.fullmatch(object_id):
+            continue
+        try:
+            _raw_git(root, "cat-file", "-e", f"{object_id}^{{commit}}")
+        except GitScanError:
+            continue
+        present.append(object_id)
+    return present
+
+
+def _tag_messages(root: Path, object_id: str, label: str, terms) -> tuple[list[str], int]:
+    """Scan an annotated tag's message (and any tag it points at)."""
+    hits: list[str] = []
+    count = 0
+    for _depth in range(16):
+        try:
+            kind = _raw_git(root, "cat-file", "-t", object_id).decode("ascii").strip()
+        except (GitScanError, UnicodeError) as exc:
+            return hits + [f"{label}: object read failed ({exc})"], count
+        if kind != "tag":
+            if kind != "commit":
+                hits.append(f"{label}: unsupported non-commit push target")
+            return hits, count
+        raw = _raw_git(root, "cat-file", "tag", object_id)
+        headers, _separator, message = raw.partition(b"\n\n")
+        hits.extend(scan_bytes(f"{label}:tag-message", message, terms))
+        count += 1
+        target = next((h[len(b"object "):].decode("ascii", "replace")
+                       for h in headers.split(b"\n") if h.startswith(b"object ")), "")
+        if not _HEX_OBJECT_ID.fullmatch(target):
+            return hits + [f"{label}: malformed tag object"], count
+        object_id = target
+    return hits + [f"{label}: tag chain too deep"], count
+
+
+def _changed_blobs(root: Path, commit: str) -> list[tuple[bytes, str]]:
+    """(path, blob id) for every blob a commit introduces relative to its parents."""
+    output = _raw_git(root, "diff-tree", "-r", "-z", "--root", "-m", "--no-commit-id",
+                      "--no-renames", "--no-ext-diff", commit)
+    fields = output.split(b"\0")
+    changes = []
+    index = 0
+    while index < len(fields):
+        metadata = fields[index]
+        if not metadata.startswith(b":"):
+            index += 1
+            continue
+        path = fields[index + 1] if index + 1 < len(fields) else b""
+        index += 2
+        parts = metadata[1:].split(b" ")
+        if len(parts) < 5:
+            raise GitScanError("unparseable diff-tree record")
+        new_mode, new_id = parts[1], parts[3].decode("ascii")
+        if set(new_id) == {"0"} or new_mode == b"160000":
+            continue  # deletion or submodule pointer: no new blob bytes
+        changes.append((path, new_id))
+    return changes
+
+
+def scan_pushed(
+    lines: Iterable[str],
+    root: Path | str = ".",
+    remote: str = "origin",
+    deny_terms: Iterable[str] = (),
+    published: Iterable[str] | None = None,
+) -> tuple[list[str], int]:
+    """Scan what a push publishes, from pre-push style lines.
+
+    Each line is ``<local ref> <local sha> <remote ref> <remote sha>``. For
+    every non-deletion the published ref name, any annotated tag message, and
+    every commit not already published are scanned: its stored message and
+    every blob (content and path) it introduces, so a leak added and removed
+    within the pushed range is still caught. The checked-out branch and
+    worktree are irrelevant.
+
+    "Already published" is the ref's previous remote value plus either the
+    tips the remote reports (pre-push; ``published`` is None) or exactly the
+    ``published`` commits given by the caller (CI, where every branch was
+    fetched after the push and so cannot be trusted as prior state).
+    """
+    root = Path(root)
+    terms = tuple(deny_terms)
+    if published is None and (not remote or remote.startswith("-")):
+        return ["pushed: invalid remote"], 0
+    hits: list[str] = []
+    commits: list[str] = []
+    seen_commits: set[str] = set()
+    trusted: list[str] | None = None
+    tag_count = 0
+    for line_number, line in enumerate(lines, 1):
+        line = line.rstrip("\r\n")
+        if not line.strip():
+            continue
+        fields = line.split(" ")
+        if len(fields) != 4 or not _HEX_OBJECT_ID.fullmatch(fields[1]) \
+                or not _HEX_OBJECT_ID.fullmatch(fields[3]):
+            hits.append(f"pushed:line-{line_number}: malformed push line")
+            continue
+        _local_ref, local_sha, remote_ref, remote_sha = fields
+        if set(local_sha) == {"0"}:
+            continue  # deleting a remote ref publishes nothing
+        hits.extend(scan_bytes(f"pushed:line-{line_number}:[ref name]",
+                               remote_ref.encode("utf-8", "surrogateescape"), terms))
+        tag_hits, tags = _tag_messages(root, local_sha, f"pushed:line-{line_number}", terms)
+        hits.extend(tag_hits)
+        tag_count += tags
+        if trusted is None:
+            if published is not None:
+                trusted = _existing_commits(root, published)
+            else:
+                trusted = _existing_commits(root, _remote_heads(root, remote) or [])
+        exclusions = _existing_commits(root, [remote_sha]) + trusted
+        try:
+            listed = _raw_git(root, "rev-list", local_sha, "--not", *exclusions, "--") \
+                if exclusions else _raw_git(root, "rev-list", local_sha, "--")
+        except GitScanError as exc:
+            hits.append(f"pushed:line-{line_number}: git discovery failed ({exc})")
+            continue
+        for commit in listed.decode("ascii").split():
+            if commit not in seen_commits:
+                seen_commits.add(commit)
+                commits.append(commit)
+
+    message_hits, count = _scan_commit_messages(root, commits, terms)
+    hits.extend(message_hits)
+    scanned_blobs: set[str] = set()
+    scanned_names: dict[bytes, tuple[str | None, bool]] = {}
+    for commit in commits:
+        try:
+            changes = _changed_blobs(root, commit)
+        except (GitScanError, subprocess.SubprocessError, OSError, UnicodeError) as exc:
+            hits.append(f"pushed:{commit[:12]}: tree read failed ({exc})")
+            continue
+        for path, blob_id in changes:
+            if path not in scanned_names:
+                scanned_names[path] = _configured_term_match(os.fsdecode(path), terms)
+            filename_match, filename_oversized = scanned_names[path]
+            label = (
+                f"pushed:{commit[:12]}:[filename redacted]"
+                if filename_match or filename_oversized
+                else f"pushed:{commit[:12]}:{_display_path(path)}"
+            )
+            if filename_oversized:
+                hits.append(f"{label}: normalized filename scan limit exceeded")
+            elif filename_match:
+                hits.append(f"{label}: configured private term in filename")
+            if blob_id in scanned_blobs:
+                continue
+            scanned_blobs.add(blob_id)
+            try:
+                data = _git_blob(root, blob_id.encode("ascii"))
+            except (GitScanError, subprocess.SubprocessError, OSError) as exc:
+                hits.append(f"{label}: blob read failed ({exc})")
+                continue
+            hits.extend(scan_bytes(label, data, terms))
+    return hits, count + tag_count + len(scanned_blobs)
+
+
 def _configured_terms(require_private_denylist: bool = False) -> tuple[str, ...]:
     configured = os.environ.get(DENYLIST_ENV)
     if require_private_denylist and not configured:
@@ -618,6 +876,58 @@ def main(args: list[str]) -> int:
     except DenylistError as exc:
         print(f"LEAK SCAN FAILED — {exc}", file=sys.stderr)
         return 1
+
+    if args[:1] == ["--pushed"]:
+        if len(args) != 2 or not args[1] or args[1].startswith("-"):
+            print("usage: tools/leak_scan.py --pushed REMOTE < pre-push-stdin",
+                  file=sys.stderr)
+            return 2
+        lines = sys.stdin.buffer.read().decode("utf-8", "surrogateescape").splitlines()
+        hits, count = scan_pushed(lines, remote=args[1], deny_terms=deny_terms)
+        if hits:
+            print("LEAK SCAN FAILED — private data in pushed commits or commit messages:")
+            print("\n".join(hits[:200]))
+            if len(hits) > 200:
+                print(f"... {len(hits) - 200} more finding(s)")
+            return 1
+        print(f"pushed commits clean ({count} commit messages and new blobs)")
+        return 0
+
+    if args[:1] == ["--pushed-ci"]:
+        # CI: stdin carries the pushed ref line; the argument is the one
+        # commit trusted as already published (default-branch tip), or "".
+        if len(args) != 2 or (args[1] and not _HEX_OBJECT_ID.fullmatch(args[1])):
+            print("usage: tools/leak_scan.py --pushed-ci BASE_SHA_OR_EMPTY < push-line",
+                  file=sys.stderr)
+            return 2
+        lines = sys.stdin.buffer.read().decode("utf-8", "surrogateescape").splitlines()
+        if not any(line.strip() for line in lines):
+            print("LEAK SCAN FAILED — no pushed ref line on stdin", file=sys.stderr)
+            return 1
+        hits, count = scan_pushed(lines, published=[args[1]] if args[1] else [],
+                                  deny_terms=deny_terms)
+        if hits:
+            print("LEAK SCAN FAILED — private data in pushed commits or commit messages:")
+            print("\n".join(hits[:200]))
+            if len(hits) > 200:
+                print(f"... {len(hits) - 200} more finding(s)")
+            return 1
+        print(f"pushed commits clean ({count} commit messages and new blobs)")
+        return 0
+
+    if args[:1] == ["--messages"]:
+        if len(args) != 2 or not args[1] or args[1].startswith("-"):
+            print("usage: tools/leak_scan.py --messages A..B", file=sys.stderr)
+            return 2
+        hits, count = scan_messages(args[1], deny_terms=deny_terms)
+        if hits:
+            print("LEAK SCAN FAILED — private data in commit messages:")
+            print("\n".join(hits[:200]))
+            if len(hits) > 200:
+                print(f"... {len(hits) - 200} more finding(s)")
+            return 1
+        print(f"commit messages clean ({count} commit messages in range)")
+        return 0
 
     if args[:1] == ["--state"]:
         if len(args) != 2 or args[1] not in {

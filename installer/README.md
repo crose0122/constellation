@@ -128,12 +128,44 @@ binary, including packaged imports, static assets, and the tag schema. The `.spe
 (insightface, onnxruntime, opencv) and the model weights download at first use,
 same as Ollama's.
 
+## Branding assets
+
+The Windows, Linux, and macOS icon files under `assets/` are generated with the
+Android and web artwork by `../scripts/tools/make_launcher_art.py`. Regeneration
+uses repository-owned fonts and is byte-reproducible; do not hand-edit the icons.
+
 ## Remaining before handing it to a non-technical user
 
-- **Icons** — drop `assets/icon.ico` / `icon.icns`.
+- **Dependency advisories needing MAJOR bumps** — the lockfile carries no
+  advisory that npm can fix inside current semver ranges (enforced by
+  `test/lockfile-audit.test.js`). The remaining high/critical set
+  (electron-updater AppImage search path GHSA-7g7r-gx96-252g, tar
+  decompression DoS GHSA-23hp-3jrh-7fpw, extract-zip symlink traversal
+  GHSA-jmr9-qjv8-65gv, and the Electron 33 advisory chain) requires
+  Electron 33 → 44 and electron-builder 25 → 26 — breaking major bumps of
+  direct dependencies. Schedule them with a full wizard + e2e regression
+  pass before the next release; do not ship a silent major upgrade.
 - **Code signing** — an unsigned `.exe` triggers SmartScreen; sign it.
 - **Test on Windows hardware** — verify GPU detection and the sweep command
   chain on supported NVIDIA and AMD configurations before shipping.
 - **Ship the Android APK** — the TV app currently has to be built from source
   with a JDK and the Android SDK. A prebuilt, debug-signed `.apk` next to the
   desktop installer would make the TV step as easy as the rest.
+
+## Linux (Ubuntu 24.04 and newer)
+
+Install the `.deb`: `sudo apt install ./constellation-setup_<version>_amd64.deb`.
+
+Ubuntu 24.04+ blocks unprivileged user namespaces, which Electron's sandbox needs, so
+an unconfined Electron app aborts at launch ("The SUID sandbox helper binary was found,
+but is not configured correctly…"). The `.deb` installs `/etc/apparmor.d/constellation-setup`,
+which grants `userns` to `/opt/Constellation Setup/constellation-setup` only, and loads it
+during install; uninstalling removes it. Nothing system-wide is relaxed.
+
+The AppImage is still built, but it **will not start on stock Ubuntu 24.04+**: it runs
+from a random `/tmp/.mount_*` path that no AppArmor profile can name. Use it only on
+distributions without that restriction.
+
+Build: `npm run dist:linux` (produces both). Contract tests:
+`node --test test/linux-packaging.test.js`; to inspect a built package too, set
+`CONSTELLATION_DEB=dist/constellation-setup_<version>_amd64.deb`.

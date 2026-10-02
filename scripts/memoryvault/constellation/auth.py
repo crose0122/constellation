@@ -37,7 +37,7 @@ ROUTES: dict[str, str] = {
     # display surfaces — open
     "/": OPEN, "/ambient": OPEN, "/memories": OPEN, "/wall": OPEN,
     "/menu": OPEN, "/home": OPEN, "/gallery": OPEN, "/node": OPEN,
-    "/progress": OPEN, "/manifest.json": OPEN, "/sw.js": OPEN,
+    "/progress": OPEN, "/manifest.json": OPEN, "/favicon.ico": OPEN, "/sw.js": OPEN,
     "/login": OPEN, "/api/dbg": OPEN, "/ca.pem": OPEN,
     "/api/progress": OPEN, "/api/categories": OPEN, "/api/index": OPEN,
     "/api/category": OPEN, "/api/catphoto": OPEN, "/api/family": OPEN,
@@ -48,6 +48,8 @@ ROUTES: dict[str, str] = {
     "/people": PIN, "/person": PIN, "/curation": PIN,
     "/api/people": PIN, "/api/person": PIN, "/api/curation": PIN,
     "/api/purged": PIN, "/api/vaulted": PIN, "/api/vault/folders": PIN,
+    # Debug Console state (log tail + status checks) — operator data, never open
+    "/api/debug/state": PIN,
     # anything that changes the library — PIN + CSRF
     "/api/people/notthem": PIN_WRITE, "/api/people/removeall": PIN_WRITE,
     "/api/people/label": PIN_WRITE, "/api/purge": PIN_WRITE,

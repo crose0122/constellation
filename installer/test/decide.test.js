@@ -70,8 +70,14 @@ test("Electron navigation boundary is installed before load and denies hostile n
   assert.equal(prevented, false, "only the intended local document may navigate");
 
   const main = fs.readFileSync(path.join(__dirname, "../main.js"), "utf8");
-  assert.ok(main.indexOf("installNavigationBoundary(win") < main.indexOf("loadFile("),
+  const boundary = main.indexOf("installNavigationBoundary(win, pathToFileURL(UI_INDEX).href)");
+  const load = main.indexOf("win.loadFile(UI_INDEX)");
+  assert.notEqual(boundary, -1, "createWindow must install the navigation boundary for the wizard document");
+  assert.notEqual(load, -1, "createWindow must load the bundled wizard document");
+  assert.ok(boundary < load,
     "navigation handlers must be registered before loading renderer content");
+  assert.equal(main.split("loadFile(").length - 1, 1, "exactly one renderer load, and it is guarded");
+  assert.equal(main.split("loadURL(").length - 1, 0, "the wizard never loads a remote URL");
 });
 
 test("installer document has a strict local-only CSP", () => {

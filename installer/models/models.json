@@ -1,0 +1,5 @@
+{
+  "model": "onnx-community/nsfw_image_detection-ONNX model_quantized.onnx",
+  "pin": "nsfw-screen.onnx.sha256",
+  "note": "The .onnx binary is gitignored (models/*.onnx). Before packaging, npm run gen:assets fetches it with fetch-models.sh, which verifies nsfw-screen.onnx.sha256. npm test's pretest checks commit-time entries exist so a fresh clone is never missing declared shipped assets. The packaged installer ships this model so a new install can screen photos with no GPU and no extra download."
+}

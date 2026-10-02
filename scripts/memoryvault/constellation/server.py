@@ -15,7 +15,7 @@ import random
 import sqlite3
 import sys
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -392,6 +392,28 @@ class ConstellationDB:
         return {**_node(row), "tags": tags, "relations": relations}
 
 
+DEBUG_TAG = b'<script src="/static/debug.js" defer></script>'
+
+
+def _with_debug_console(page: bytes) -> bytes:
+    """Every served page gets the Debug Console include (Ctrl+Shift+D). The
+    overlay's data endpoint is PIN-gated; the script itself is inert until
+    toggled."""
+    if DEBUG_TAG in page or b"</body>" not in page:
+        return page
+    return page.replace(b"</body>", DEBUG_TAG + b"\n</body>", 1)
+
+
+def debug_state(db_path, since: str | None) -> dict:
+    """GET /api/debug/state payload (fleet debug-console contract v1)."""
+    from . import debugchecks, debuglog
+    return {"product": "constellation",
+            "now": datetime.now(timezone.utc).isoformat(
+                timespec="microseconds").replace("+00:00", "Z"),
+            "log": debuglog.entries(since),
+            "checks": debugchecks.run_checks(db_path)}
+
+
 class Handler(BaseHTTPRequestHandler):
     condb: ConstellationDB = None  # set by serve()
 
@@ -399,6 +421,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code: int, body: bytes, ctype: str):
+        if ctype == "text/html" and code == 200:
+            body = _with_debug_console(body)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -619,6 +643,18 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in ("/api/auth/login", "/api/auth/logout"):
             self._send(405, b"use POST", "text/plain")
             return
+        if url.path == "/api/debug/state":
+            # answered before the DB is opened: "the DB is down" is exactly
+            # what the console must be able to report
+            since = (q.get("since", [""])[0] or "").strip() or None
+            body = json.dumps(debug_state(self.condb.db_path, since)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if url.path == "/api/photo/share" and not auth.share_enabled():
             self._deny(404, "sharing is off", hint="an adult can enable it in settings")
             return
@@ -642,6 +678,12 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/manifest.json":
                 self._send(200, (STATIC_DIR / "manifest.json").read_bytes(),
                            "application/manifest+json")
+            elif url.path == "/favicon.ico":
+                # Chrome asks for this before it reads any <link rel="icon">,
+                # and a 404 here is what left the desktop app window wearing a
+                # generic globe. PNG bytes under an .ico name are fine.
+                self._send(200, (STATIC_DIR / "icon-192.png").read_bytes(),
+                           "image/png")
             elif url.path == "/sw.js":
                 # served from the root so the service worker scope covers "/"
                 self._send(200, (STATIC_DIR / "sw.js").read_bytes(),
@@ -1331,8 +1373,9 @@ def serve(host: str = "0.0.0.0", port: int = 8484, db_path: Path | None = None,
     certificate. Private surfaces on the HTTP port redirect to HTTPS."""
     import threading
 
-    from . import tls
+    from . import debuglog, tls
 
+    debuglog.install_tap()
     Handler.condb = ConstellationDB(db_path or config.DB_PATH)
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.is_tls = False
