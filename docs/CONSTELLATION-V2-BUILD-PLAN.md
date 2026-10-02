@@ -80,7 +80,7 @@ Every checkpoint merges only after independent review of the exact tree.
 - **Acceptance:** an unauthenticated LAN client gets 401 on every PIN route (the matrix test) and full access to the wall. Mutation checks cover: a route left unclassified, PIN compared without constant time, a missing rate limit, and a CSRF bypass.
 
 ### CP2 — Installer v2 (spec gates 1 and 9-partial)
-- **Six-step wizard:** Welcome → System scan → Storage & sources → Downloads → First sweep → Finish. Plus a "Show details" pane with paths, model choice and a live log tail.
+- **One question per screen (redesign 2026-10-02):** Where are your photos? (scan | pick a folder) → Where should Constellation keep its copy? → Family PIN → Backup drive → Your sky is filling up. Plus a "Show details" pane with the facts and a live log tail. AI descriptions are opt-in on the last screen (default Not now); without that yes the installer downloads no model and no stage uses the graphics card.
 - **Hardware floor check:** 8 GB RAM and 200 GB free, in plain words, with bundled offline guidance and no external shopping link. CPU is the default model path (X2).
 - **Linux:**
   - AppImage;
@@ -92,7 +92,7 @@ Every checkpoint merges only after independent review of the exact tree.
   - the server runs as a scheduled task at logon, with a tray icon;
   - firewall rule scoped to the private network profile.
 - The macOS target is removed (X3).
-- The wizard sets the PIN and walks the backup drive step (backup is mandatory, spec A5).
+- The wizard sets the PIN and walks the backup drive step (spec A5; *Skip for now* allowed with the consequence stated — product decision 2026-10-02).
 - **Acceptance:** on clean Ubuntu 26.04 and Windows 11 test machines, a non-technical run finishes without a terminal, and the wall shows photos the same night. Screen recordings remain private evidence.
 
 ### CP3 — First run and ingest quality (spec gate 2)

@@ -9,6 +9,7 @@ const fs = require("fs");
 const path = require("path");
 const https = require("https");
 const { spawn, execFile } = require("child_process");
+const decide = require("./decide");
 
 const IS_WIN = process.platform === "win32";
 const IS_MAC = process.platform === "darwin";
@@ -153,6 +154,7 @@ function configLines(cfg) {
     cfg.sources && cfg.sources.length ? `MEMORYVAULT_SOURCES=${cfg.sources.join(";")}` : "",
     cfg.backupTarget ? `MEMORYVAULT_BACKUP_TARGET=${cfg.backupTarget}` : "",
     `MEMORYVAULT_AUTO_UPDATE=${cfg.updates === false ? "0" : "1"}`,
+    `MEMORYVAULT_VISION=${visionOn(cfg) ? "on" : "off"}`,
     screenModelPath() ? `MEMORYVAULT_NSFW_ONNX_PATH=${screenModelPath()}` : "",
   ].filter(Boolean);
 }
@@ -192,9 +194,51 @@ function cleanEnv() {
 // Library + family PIN + family certificate, before anything is downloaded, so
 // a mistake here (bad folder, backend missing) shows up in seconds, not after
 // a 6 GB download.
+// --- where the library may live (enforced here, not only in the wizard) ----
+// decide.validateLibraryRoot compares text; that misses a second path to the
+// same folder (a bind mount: a folder picker can return /data/home/alex for
+// /home/alex). So "same folder" and "inside" are
+// also decided by device+inode of every existing ancestor.
+function dirId(p, io = fs) {
+  try { const st = io.statSync(p); return st.isDirectory() ? `${st.dev}:${st.ino}` : null; }
+  catch { return null; }
+}
+function isInsideDir(child, parent, io = fs) {
+  const pid = dirId(parent, io);
+  if (!pid || !child) return false;
+  let cur = path.resolve(child);
+  for (;;) {
+    if (dirId(cur, io) === pid) return true;
+    const up = path.dirname(cur);
+    if (up === cur) return false;
+    cur = up;
+  }
+}
+function libraryLocationError(cfg, { home = os.homedir(), io = fs } = {}) {
+  const textual = decide.validateLibraryRoot(cfg.libraryRoot,
+    { home, sources: cfg.sources, backupTarget: cfg.backupTarget });
+  if (textual) return textual;
+  const lib = cfg.libraryRoot;
+  const homeId = dirId(home, io);
+  if (homeId && dirId(lib, io) === homeId) {
+    return decide.validateLibraryRoot(home, { home });               // same folder, different path
+  }
+  for (const src of cfg.sources || []) {
+    if (isInsideDir(lib, src, io) || isInsideDir(src, lib, io)) {
+      return decide.validateLibraryRoot(src, { sources: [src] });    // the overlap sentence
+    }
+  }
+  if (cfg.backupTarget && (isInsideDir(lib, cfg.backupTarget, io) || isInsideDir(cfg.backupTarget, lib, io))) {
+    return decide.validateLibraryRoot(cfg.backupTarget, { backupTarget: cfg.backupTarget });
+  }
+  return null;
+}
+
 async function prepare(backendDir, dataDir, cfg) {
   const exe = backendExe(backendDir);
   if (!exe) return { ok: false, error: "The Constellation program files are missing. Reinstall and try again." };
+  const where = libraryLocationError(cfg);
+  if (where) return { ok: false, field: "lib", error: where };
   const unwritable = firstUnwritable([cfg.libraryRoot, cfg.backupTarget]);
   if (unwritable) {
     return { ok: false, field: "lib",
@@ -235,7 +279,9 @@ function launchStack(backendDir, appDir, cfg, onStatus) {
   const exe = backendExe(backendDir);
   if (exe) {
     onStatus({ phase: "launch", msg: "Starting Constellation…" });
-    return spawn(exe, ["constellation"], {
+    const ports = ["--port", String((cfg && cfg.httpPort) || 8484),
+      "--tls-port", String((cfg && cfg.tlsPort) || 8485)];
+    return spawn(exe, ["constellation", ...ports], {
       env: { ...cleanEnv(), ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) },
       stdio: "ignore", windowsHide: true, detached: true }).unref();
   }
@@ -387,6 +433,7 @@ function envFromCfg(cfg) {
     MEMORYVAULT_OLLAMA_URL: OLLAMA + "/api/generate",
     MEMORYVAULT_VAULT_MODE: cfg.vaultMode || "dir",
     MEMORYVAULT_AUTO_UPDATE: cfg.updates === false ? "0" : "1",
+    MEMORYVAULT_VISION: visionOn(cfg) ? "on" : "off",
     ...(cfg.backupTarget ? { MEMORYVAULT_BACKUP_TARGET: cfg.backupTarget } : {}),
   };
 }
@@ -428,6 +475,15 @@ const BACKGROUND_STAGES = [
   ["screen"], ["tag"], ["geocode"], ["describe"],
   ["faces", "scan"], ["faces", "cluster"], ["edges"],
 ];
+
+// "Describe your photos" is the only thing that puts the vision model (and
+// with it the graphics card) to work. Off unless the family said yes.
+function visionOn(cfg) { return !!(cfg && cfg.describe === true); }
+const VISION_STAGES = new Set(["tag", "describe"]);
+function backgroundStages(cfg) {
+  return visionOn(cfg) ? BACKGROUND_STAGES
+    : BACKGROUND_STAGES.filter((args) => !VISION_STAGES.has(args[0]));
+}
 
 // One stdout line from the backend -> a count for the patient sky, or null.
 function parseProgress(line) {
@@ -522,7 +578,34 @@ function startBackgroundSweep(backendDir, cfg) {
   if (!exe) return { ok: false, skipped: true };
   const env = { ...cleanEnv(), ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
   const q = (s) => IS_WIN ? `"${s}"` : `'${String(s).replace(/'/g, `'\\''`)}'`;
-  const chain = BACKGROUND_STAGES
+  const chain = backgroundStages(cfg)
+    .map((args) => [exe, ...args].map(q).join(" "))
+    .join(IS_WIN ? " & " : "; ");
+  const child = IS_WIN
+    ? spawn("cmd.exe", ["/c", chain], { env, detached: true, stdio: "ignore", windowsHide: true })
+    : spawn("/bin/sh", ["-c", chain], { env, detached: true, stdio: "ignore" });
+  child.unref();
+  return { ok: true };
+}
+
+// The model download for "Describe your photos". Without the family's explicit
+// yes it does nothing at all: no Ollama, no 6 GB model, no graphics card.
+async function installVision(cfg, send, runtime = {}) {
+  if (!visionOn(cfg)) return { ok: true, skipped: true };
+  await (runtime.installOllama || installOllama)(cfg, send);
+  await (runtime.pullModel || pullModel)(cfg.model, send);
+  return { ok: true };
+}
+
+// "Describe your photos" turned on after setup: just the vision stages, over
+// whatever is already in the library, detached like the overnight chain.
+function startVisionSweep(backendDir, cfg) {
+  if (!visionOn(cfg)) return { ok: false, error: "descriptions are off" };
+  const exe = backendExe(backendDir);
+  if (!exe) return { ok: false, skipped: true };
+  const env = { ...cleanEnv(), ...serveEnv(cfg && cfg.mode), ...envFromCfg(cfg) };
+  const q = (s) => IS_WIN ? `"${s}"` : `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const chain = BACKGROUND_STAGES.filter((a) => VISION_STAGES.has(a[0]))
     .map((args) => [exe, ...args].map(q).join(" "))
     .join(IS_WIN ? " & " : "; ");
   const child = IS_WIN
@@ -538,5 +621,5 @@ function startBackgroundSweep(backendDir, cfg) {
 
 module.exports = { ollamaRunning, ollamaInstalled, installOllama, pullModel,
   writeConfig, configLines, prepare, launchStack, runFirstSweep, startBackgroundSweep, backendExe,
-  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable,
+  parseProgress, FOREGROUND_STAGES, BACKGROUND_STAGES, backgroundStages, visionOn, libraryLocationError, isInsideDir, startVisionSweep, installVision, FIRST_SWEEP_LIMIT, screenModelPath, firstUnwritable,
   isHtmlMediaType, serverUp };

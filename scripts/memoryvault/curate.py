@@ -188,6 +188,8 @@ def rescue(conn, shard: str | None = None, limit: int | None = None) -> dict:
     dimensions get mis-binned. A yes verdict flips the photo to 'Kept' — a
     permanent override the heuristics respect. Checked photos are stamped
     (curation_check) so nightly re-runs only review NEW trash."""
+    if not config.VISION_ENABLED:
+        return {"skipped": "rescue", "reason": "vision model is off on this install"}
     from .tag import model_image_b64
     from .vision_http import post_vision_text
 
@@ -255,6 +257,8 @@ DOC_PROMPT = (
 def vision_docs(conn, shard: str | None = None, limit: int | None = None) -> dict:
     """GPU pass: bin photographed paperwork/documents as Trash(document).
     Runs after tagging so the GPUs are free; restorable via /curation."""
+    if not config.VISION_ENABLED:
+        return {"skipped": "vision_docs", "reason": "vision model is off on this install"}
     from .tag import model_image_b64
     from .vision_http import post_vision_text
 
@@ -329,6 +333,8 @@ def screenshots(conn, shard: str | None = None, limit: int | None = None) -> dic
     Trash(screenshot-text). Re-binning is reversible from /curation and, per
     the project invariant, nothing here deletes a file.
     """
+    if not config.VISION_ENABLED:
+        return {"skipped": "screenshots", "reason": "vision model is off on this install"}
     from .tag import model_image_b64
     from .vision_http import post_vision_text
 
@@ -429,6 +435,8 @@ def screen_captures(conn, shard: str | None = None, limit: int | None = None,
     # the NSFW screener already owns that name and stamps it on every safe
     # photo, so a guard against it excluded 5,348 of 5,351 candidates and
     # this pass silently did nothing on its first run.
+    if not config.VISION_ENABLED:
+        return {"skipped": "screen_captures", "reason": "vision model is off on this install"}
     from .tag import model_image_b64
     from .vision_http import post_vision_text
 

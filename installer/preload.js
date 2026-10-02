@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld("setup", {
   defaults: () => ipcRenderer.invoke("defaults"),
   openWall: () => ipcRenderer.invoke("openWall"),
   onProgress: (cb) => ipcRenderer.on("progress", (_e, p) => cb(p)),
+  // "Where are your photos?" — read-only discovery + a summary of a picked folder
+  scanPhotos: (opts) => ipcRenderer.invoke("scanPhotos", opts || {}),
+  summarizeFolder: (dir, opts) => ipcRenderer.invoke("summarizeFolder", dir, opts || {}),
+  onScanProgress: (cb) => ipcRenderer.on("scanProgress", (_e, p) => cb(p)),
+  libraryCheck: (cfg) => ipcRenderer.invoke("libraryCheck", cfg),
+  enableDescribe: (cfg) => ipcRenderer.invoke("enableDescribe", cfg),
   // Debug Console: read-only log tail + status checks (main-process log ring)
   debugState: (since) => ipcRenderer.invoke("debugState", typeof since === "string" ? since : ""),
 });

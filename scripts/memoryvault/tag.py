@@ -137,6 +137,8 @@ def store_tags(conn, photo_id: int, raw: dict, schema: dict, taken_at: str | Non
 
 def tag(conn, vision_fn=call_vision, limit: int | None = None,
         shard: str | None = None, retag: bool = False) -> dict:
+    if not config.VISION_ENABLED:
+        return {"skipped": "tag", "reason": "vision model is off on this install"}
     schema = load_schema()
     prompt = build_prompt(schema)
     fmt = build_format(schema)

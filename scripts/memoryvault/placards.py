@@ -127,6 +127,9 @@ def placards(conn, shard: str | None = None, limit: int | None = None,
     import sqlite3
     import time as _time
 
+    from . import config
+    if not config.VISION_ENABLED:
+        return {"skipped": "placards", "reason": "vision model is off on this install"}
     from .vision_http import post_vision_text
 
     if not force:

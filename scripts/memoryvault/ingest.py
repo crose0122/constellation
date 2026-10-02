@@ -347,5 +347,9 @@ def ingest(conn, limit: int | None = None, sample: bool = False,
             conn.commit()
             print(f"  ingested {i}/{len(rows)}", flush=True)
     conn.commit()
+    # The last count, always: a first folder of under 25 photos otherwise
+    # never reports one and the installer's sky says 0 when it is done.
+    if progress and rows and len(rows) % 25:
+        progress(len(rows), len(rows))
     finish_run(conn, run, stats)
     return stats

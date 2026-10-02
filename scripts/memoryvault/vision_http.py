@@ -125,12 +125,22 @@ class _Deadline:
         return False
 
 
+class VisionDisabled(RuntimeError):
+    """The vision model is switched off on this install (MEMORYVAULT_VISION=off).
+
+    Raised before any network call, so with the switch off nothing — no stage,
+    no CLI command, no future caller — can reach the model or the graphics
+    card, whichever entry point it came through."""
+
+
 def post_vision(payload: dict, *, timeout: int = 120, url: str | None = None):
     """POST to the vision server and return the decoded JSON body.
 
     Raises on any failure — including a hang, which now surfaces as
     VisionTimeout instead of stopping the pipeline forever.
     """
+    if not config.VISION_ENABLED:
+        raise VisionDisabled("the vision model is off on this install")
     target = url or config.OLLAMA_URL
     ceiling = min(WALL_CLOCK_CAP,
                   max(WALL_CLOCK_FLOOR, int(timeout * WALL_CLOCK_FACTOR)))
