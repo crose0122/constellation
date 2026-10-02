@@ -1103,3 +1103,10 @@ test("Windows rollback attempts every cleanup and reports all failures", async (
   assert.equal(fs.existsSync(path.join(dataDir, "start-constellation.cmd")), false,
     "file cleanup still runs after command cleanup failures");
 });
+
+test("autostart carries the picked ports into the unit and the Windows launcher", () => {
+  const u = a.systemdUnit({ exe: "/opt/c/brain", envFile: "/h/.env", httpPort: 8584, tlsPort: 8585 });
+  assert.match(u, /--port 8584 --tls-port 8585/);
+  const l = a.windowsLauncher({ exe: "C:\\x\\brain.exe", env: {}, httpPort: 8684, tlsPort: 8685 });
+  assert.match(l, /--port 8684 --tls-port 8685/);
+});

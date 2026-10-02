@@ -68,3 +68,46 @@ test("detached spawn alone does not verify overnight completion", async () => {
   assert.equal(r.background, false);
   assert.equal(r.backgroundStarted, true);
 });
+
+// 2026-10-02 regression (a hands-on test run): an older Constellation already
+// held :8484, its wall passed the readiness probe, and "Open the sky" showed a
+// different family's library. A wall page is not proof — the CA must be ours.
+function identityHarness({ ours, cfg = {} }) {
+  const seen = {};
+  const deps = {
+    writeConfig: () => "/data/.env",
+    backendExe: () => "/app/brain",
+    installAutostart: async (a) => { seen.autostart = a; return { ok: true, started: true,
+      startsOnLogin: true, startsOnBoot: true, rollback: async () => { seen.rolledBack = true; return { ok: true }; } }; },
+    launchStack: () => {},
+    serverUp: async (_h, port) => { seen.probedPort = port; return true; },
+    servesOurCa: async (_h, port, pem) => { seen.caPort = port; seen.pem = pem; return ours; },
+    readOurCa: () => "-----BEGIN CERTIFICATE-----\nours\n-----END CERTIFICATE-----\n",
+    startBackgroundSweep: () => ({ ok: true, verified: false }),
+    finishClaims: require("../decide").finishClaims,
+  };
+  return { seen, run: () => finishInstall({ cfg, dataDir: "/data", backendDir: "/b", appDir: "/a",
+    send: () => {}, deps }) };
+}
+
+test("finish flow refuses a server that answers the wall but serves someone else's CA", async () => {
+  const h = identityHarness({ ours: false, cfg: { httpPort: 8584, tlsPort: 8585 } });
+  const r = await h.run();
+  assert.equal(r.ok, false);
+  assert.equal(r.serverUp, false);
+  assert.match(r.error, /Something else is answering on port 8584/);
+  assert.equal(h.seen.rolledBack, true, "autostart for a server that isn't ours is rolled back");
+});
+
+test("finish flow uses the picked ports everywhere and reports them", async () => {
+  const h = identityHarness({ ours: true, cfg: { httpPort: 8684, tlsPort: 8685 } });
+  const r = await h.run();
+  assert.equal(r.ok, true);
+  assert.equal(h.seen.probedPort, 8684);
+  assert.equal(h.seen.caPort, 8684);
+  assert.equal(h.seen.autostart.httpPort, 8684);
+  assert.equal(h.seen.autostart.tlsPort, 8685);
+  assert.equal(r.httpPort, 8684);
+  assert.equal(r.tlsPort, 8685);
+  assert.match(h.seen.pem, /BEGIN CERTIFICATE/);
+});

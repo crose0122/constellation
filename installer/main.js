@@ -1,7 +1,8 @@
 // Constellation Setup — Electron main process.
 // Owns the wizard window and bridges the renderer to the scan/setup engines.
 "use strict";
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeImage } = require("electron");
+const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const os = require("os");
@@ -9,6 +10,8 @@ const scan = require("./scan");
 const setup = require("./setup");
 const autostart = require("./autostart");
 const decide = require("./decide");
+const network = require("./network");
+const photoscan = require("./photoscan");
 const { finishInstall } = require("./finish-install");
 const debuglog = require("./debuglog");
 const debugstate = require("./debugstate");
@@ -18,6 +21,8 @@ debuglog.installConsoleTap();
 const DATA_DIR = () => path.join(app.getPath("home"), "Constellation");
 
 let win;
+// The port pair this install's server actually got (set by "finish").
+let installPorts = { httpPort: 8484, tlsPort: 8485 };
 const UI_INDEX = path.join(__dirname, "ui", "index.html");
 
 // Every progress event the wizard shows also lands in the Debug Console ring
@@ -73,6 +78,49 @@ ipcMain.handle("pickFolder", async (_e, title) => {
   return r.canceled ? null : r.filePaths[0];
 });
 
+// --- IPC: "Let's scan for your photos" / "I'll pick a folder" ---------------
+// Read-only. Never reads Constellation's own folder or the backup drive.
+// Samples become small thumbnails here, so the page never gets file paths
+// it could load itself.
+function thumbnail(file, height = 96) {
+  try {
+    const img = nativeImage.createFromPath(file);
+    if (img.isEmpty()) return null;
+    return img.resize({ height, quality: "good" }).toDataURL();
+  } catch { return null; }
+}
+function withThumbs(place, height) {
+  return { ...place, thumbs: (place.samples || []).map((f) => thumbnail(f, height)).filter(Boolean),
+    samples: undefined };
+}
+function scanExclusions(backupTarget) {
+  return [DATA_DIR(), path.join(os.homedir(), "Constellation"), backupTarget].filter(Boolean);
+}
+ipcMain.handle("scanPhotos", async (_e, opts = {}) => {
+  try {
+    const { drives } = await scan.scanStorage();
+    let last = 0;
+    const r = await photoscan.scanForPhotos({
+      roots: photoscan.scanRoots(os.homedir(), drives),
+      exclude: scanExclusions(opts && opts.backupTarget),
+      onProgress: (p) => {
+        const t = Date.now();
+        if (win && t - last > 250) { last = t; win.webContents.send("scanProgress", { dirs: p.dirs }); }
+      },
+    });
+    return { ok: true, partial: r.partial, skipped: r.skipped,
+      places: r.places.slice(0, 8).map((pl) => withThumbs(pl, 96)) };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+ipcMain.handle("summarizeFolder", async (_e, dir, opts = {}) => {
+  if (typeof dir !== "string" || !path.isAbsolute(dir)) return { ok: false, error: "Pick a folder." };
+  try {
+    const r = await photoscan.summarizeFolder(dir, { exclude: scanExclusions(opts && opts.backupTarget) });
+    return { ok: true, partial: r.partial, place: withThumbs(r.place, 120) };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+ipcMain.handle("libraryCheck", (_e, cfg) => ({ error: setup.libraryLocationError(cfg || {}) }));
+
 // --- IPC: library + family PIN + family certificate ------------------------
 ipcMain.handle("prepare", async (_e, cfg) => {
   if (cfg && cfg.pin) debuglog.rememberSecret(String(cfg.pin));
@@ -90,6 +138,9 @@ ipcMain.handle("prepare", async (_e, cfg) => {
 // --- IPC: install Ollama + pull the model (streams progress) ---------------
 ipcMain.handle("install", async (_e, cfg) => {
   const send = progressSender();
+  // Ollama + the vision model exist only for "Describe your photos". Without
+  // that yes, nothing is downloaded and nothing touches the graphics card.
+  if (!setup.visionOn(cfg)) return { ok: true, skipped: true };
   try {
     await setup.installOllama(cfg, send);
     await setup.pullModel(cfg.model, send);
@@ -97,6 +148,24 @@ ipcMain.handle("install", async (_e, cfg) => {
   } catch (e) {
     send({ phase: "error", msg: String(e && e.message || e) });
     return { ok: false, error: String(e) };
+  }
+});
+
+// --- IPC: "Describe your photos" — the family said yes ---------------------
+// Download Ollama + the model (the only big download), switch the saved
+// config to vision-on so overnight runs include it, then describe what is
+// already in the library. Nothing here runs without that explicit yes.
+ipcMain.handle("enableDescribe", async (_e, cfg) => {
+  const send = progressSender();
+  if (!cfg || cfg.describe !== true) return { ok: false, error: "Descriptions weren't turned on." };
+  try {
+    await setup.installOllama(cfg, send);
+    await setup.pullModel(cfg.model, send);
+    setup.writeConfig(DATA_DIR(), cfg);
+    return setup.startVisionSweep(BACKEND_DIR, cfg);
+  } catch (e) {
+    send({ phase: "error", msg: String((e && e.message) || e) });
+    return { ok: false, error: String((e && e.message) || e) };
   }
 });
 
@@ -118,6 +187,15 @@ ipcMain.handle("sweep", async (_e, cfg) => {
 ipcMain.handle("finish", async (_e, cfg) => {
   const send = progressSender();
   try {
+    // Never assume 8484 is ours: another Constellation (or anything else) may
+    // already hold it, and its wall would pass for ours. Take a free pair.
+    const ports = await network.pickPorts();
+    if (!ports) {
+      return { ok: false, error: "Constellation couldn't find a free network port on this computer." };
+    }
+    installPorts = ports;
+    cfg = { ...cfg, ...ports };
+    const caFile = path.join(cfg.libraryRoot, ".tls", "ca.pem");
     return await finishInstall({ cfg, dataDir: DATA_DIR(), backendDir: BACKEND_DIR,
       appDir: APP_DIR, send, deps: {
         writeConfig: setup.writeConfig,
@@ -127,23 +205,18 @@ ipcMain.handle("finish", async (_e, cfg) => {
         serverUp: setup.serverUp,
         startBackgroundSweep: setup.startBackgroundSweep,
         finishClaims: decide.finishClaims,
+        servesOurCa: network.servesOurCa,
+        readOurCa: () => fs.readFileSync(caFile, "utf8"),
       } });
   } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
-// --- IPC: this machine's LAN address, for the TV / phone step --------------
-function lanAddress() {
-  for (const ifaces of Object.values(os.networkInterfaces() || {})) {
-    for (const i of ifaces || []) {
-      if (i.family === "IPv4" && !i.internal) return i.address;
-    }
-  }
-  return null;
-}
+// --- IPC: this machine's LAN address + ports, for the TV / phone links ------
+// The private address on the default route — never Docker, VPN or other
+// virtual interfaces (network.js) — and the ports the server really got.
+ipcMain.handle("lanAddress", () => ({ address: network.lanAddress(), ...installPorts }));
 
-ipcMain.handle("lanAddress", () => lanAddress());
-
-ipcMain.handle("openWall", () => openWall((target) => shell.openExternal(target)));
+ipcMain.handle("openWall", () => openWall((target) => shell.openExternal(target), installPorts.httpPort));
 ipcMain.handle("defaults", () => ({
   libraryRoot: path.join(os.homedir(), "Constellation", "library"),
 }));

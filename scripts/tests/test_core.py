@@ -6,9 +6,11 @@ logic incl. fail-safe error semantics, vault scrubbing, and the Brain's
 neighborhood query.
 """
 
+import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -139,6 +141,36 @@ class PipelineTest(unittest.TestCase):
         # THE fail-safe: any error is ERROR, never a quarantine verdict
         self.assertEqual(screen_verdict("x", score_boom, confirm_yes)[0], ERROR)
         self.assertEqual(screen_verdict("x", score(0.6), confirm_boom)[0], ERROR)
+
+    def test_screening_with_vision_off_sends_borderline_to_review(self):
+        # Installs without "Describe your photos" never call the vision model:
+        # a borderline first-pass score becomes a grown-up's call, not a guess.
+        from memoryvault.screen import screen_verdict, SAFE, REVIEW
+
+        def must_not_call(p):
+            raise AssertionError("vision model called with vision off")
+
+        self.assertEqual(screen_verdict("x", lambda p: 0.01, must_not_call, vision=False)[0], SAFE)
+        self.assertEqual(screen_verdict("x", lambda p: 0.06, must_not_call, vision=False)[0], REVIEW)
+        self.assertEqual(screen_verdict("x", lambda p: 0.99, must_not_call, vision=False)[0], REVIEW)
+
+    def test_vision_switch_reads_env(self):
+        import importlib
+        from memoryvault import config
+        for val, want in (("off", False), ("0", False), ("No", False), ("on", True), ("", True)):
+            with mock.patch.dict(os.environ, {"MEMORYVAULT_VISION": val}):
+                self.assertEqual(importlib.reload(config).VISION_ENABLED, want, val)
+        importlib.reload(config)
+
+    def test_tag_and_describe_skip_when_vision_off(self):
+        import io, contextlib
+        from memoryvault import cli, config
+        with mock.patch.object(config, "VISION_ENABLED", False):
+            for cmd in (cli.cmd_tag, cli.cmd_describe):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cmd(None)            # must return before touching args/db
+                self.assertIn("vision model is off", out.getvalue())
 
     def test_screen_halts_without_vault_and_scrubs_with_it(self):
         from memoryvault import vault

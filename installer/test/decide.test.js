@@ -176,3 +176,13 @@ test("removable drives are offered as sources but not pre-ticked", () => {
   assert.equal(d.defaultSourceChecked("/mnt/synthetic-backup", drives), false);
   assert.equal(d.defaultSourceChecked("/mnt/library/Pictures", drives), true);
 });
+
+test("wall link follows the install's real port and trusts nothing else", () => {
+  const d = require("../decide");
+  assert.equal(d.wallUrl(8584), "http://localhost:8584/wall");
+  assert.equal(d.isTrustedLocalUrl("http://localhost:8584/wall", 8584), true);
+  assert.equal(d.isTrustedLocalUrl("http://localhost:8484/wall", 8584), false, "the old fixed port is not ours");
+  assert.equal(d.isTrustedLocalUrl("http://localhost:8584/menu", 8584), false);
+  assert.equal(d.wallUrl(80), d.WALL_URL, "privileged/invalid ports fall back to the default");
+  assert.equal(d.wallUrl("8584"), d.WALL_URL);
+});

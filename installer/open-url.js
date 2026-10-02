@@ -1,12 +1,13 @@
 "use strict";
 
-const { WALL_URL, isTrustedLocalUrl } = require("./decide");
+const { wallUrl, isTrustedLocalUrl } = require("./decide");
 
-async function openWall(openExternal) {
-  if (!isTrustedLocalUrl(WALL_URL)) {
+async function openWall(openExternal, httpPort = 8484) {
+  const url = wallUrl(httpPort);
+  if (!isTrustedLocalUrl(url, httpPort)) {
     return { ok: false, error: "Only local Constellation pages can be opened." };
   }
-  await openExternal(WALL_URL);
+  await openExternal(url);
   return { ok: true };
 }
 

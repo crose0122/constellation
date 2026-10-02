@@ -3,10 +3,14 @@
 // Finish orchestration lives outside Electron so startup and rollback behavior
 // can be exercised without loading a desktop runtime.
 async function finishInstall({ cfg, dataDir, backendDir, appDir, send, deps }) {
+  // The ports were picked free just before this (main.js); every later step —
+  // autostart, launch, readiness, the links on the last screen — uses them.
+  const httpPort = cfg.httpPort || 8484;
+  const tlsPort = cfg.tlsPort || 8485;
   const envFile = deps.writeConfig(dataDir, cfg);
   const exe = deps.backendExe(backendDir);
   let auto = { ok: false, error: "no bundled backend" };
-  if (exe) auto = await deps.installAutostart({ exe, envFile, dataDir });
+  if (exe) auto = await deps.installAutostart({ exe, envFile, dataDir, httpPort, tlsPort });
 
   let launchAttempted = false;
   if (auto.ok && auto.started) {
@@ -21,8 +25,19 @@ async function finishInstall({ cfg, dataDir, backendDir, appDir, send, deps }) {
   let readinessError = null;
   let serverUp = false;
   if (launchAttempted) {
-    try { serverUp = await deps.serverUp("127.0.0.1", 8484, 15000); }
+    try { serverUp = await deps.serverUp("127.0.0.1", httpPort, 15000); }
     catch (e) { readinessError = String((e && e.message) || e); }
+  }
+  // A wall page proves only that *a* Constellation answers. It must be ours:
+  // the CA it serves has to be the one this wizard just made in the library.
+  if (serverUp && deps.servesOurCa) {
+    let ours = false;
+    try { ours = await deps.servesOurCa("127.0.0.1", httpPort, deps.readOurCa()); }
+    catch { ours = false; }
+    if (!ours) {
+      serverUp = false;
+      readinessError = `Something else is answering on port ${httpPort}, not your new Constellation.`;
+    }
   }
   let rollback = null;
   if (!serverUp && auto.ok && typeof auto.rollback === "function") {
@@ -43,6 +58,8 @@ async function finishInstall({ cfg, dataDir, backendDir, appDir, send, deps }) {
   });
   return {
     ok: claims.ok,
+    httpPort,
+    tlsPort,
     autostart: !!auto.ok,
     background: !!(bg.ok && bg.verified),
     backgroundStarted: !!bg.ok,
