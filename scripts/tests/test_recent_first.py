@@ -93,8 +93,17 @@ class RecentFirstTest(unittest.TestCase):
         self._discover()
         seen = []
         ingest(self.conn, recent_first=True, progress=lambda d, t: seen.append((d, t)))
-        self.assertEqual([d for d, _ in seen], [25, 50])
+        self.assertEqual([d for d, _ in seen], [25, 50, 65], "the final count always arrives")
         self.assertTrue(all(t == 65 for _, t in seen))
+
+    def test_progress_reports_a_small_first_folder(self):
+        # Under 25 photos used to report nothing, so the installer's sky said 0.
+        from memoryvault.ingest import ingest
+        self._discover()
+        seen = []
+        ingest(self.conn, recent_first=True, progress=lambda d, t: seen.append((d, t)))
+        n = len(self.times)
+        self.assertEqual(seen, [(n, n)])
 
     def test_cli_emits_json_progress(self):
         for i in range(30):

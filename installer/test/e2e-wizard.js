@@ -78,7 +78,7 @@ async function runWizard(electron, home, track) {
     const orig = scan.fullScan;
     scan.fullScan = async () => { const r = await orig(); r.storage = { drives: fake, photoCandidates: [] }; return r; };
     // synthetic photos: noisy JPEGs well over the scan's 40 KB photo floor
-    const fs = require("fs"), path = require("path");
+    const req = process.mainModule.require.bind(process.mainModule); const fs = req("fs"), path = req("path");
     const dir = path.join(home, "Pictures", "Family");
     fs.mkdirSync(dir, { recursive: true });
     for (let i = 0; i < 24; i++) {

@@ -1110,3 +1110,19 @@ test("autostart carries the picked ports into the unit and the Windows launcher"
   const l = a.windowsLauncher({ exe: "C:\\x\\brain.exe", env: {}, httpPort: 8684, tlsPort: 8685 });
   assert.match(l, /--port 8684 --tls-port 8685/);
 });
+
+// 2026-10-02 clean-machine run: start-on-boot failed on stock Ubuntu 26.04
+// because verify reported a warning about an unrelated system unit.
+test("verify findings: unrelated system units are ignored, ours still fail closed", () => {
+  const unit = "/home/example/.config/systemd/user/constellation.service";
+  const stock = [
+    "/usr/lib/systemd/system/xfs_scrub_all.service:26: Support for option CPUAccounting= has been removed and it is ignored",
+    "/usr/lib/systemd/system/system-xfs_scrub.slice:15: Support for option CPUAccounting= has been removed and it is ignored",
+  ].join("\n");
+  assert.equal(a.verifyFindings(stock, unit), "");
+  const ours = `${unit}:12: Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.`;
+  assert.equal(a.verifyFindings(stock + "\n" + ours, unit), ours);
+  assert.equal(a.verifyFindings("Failed to load something important", unit), "Failed to load something important",
+    "a finding that names no file still counts");
+  assert.equal(a.verifyFindings("", unit), "");
+});

@@ -341,7 +341,8 @@ const SCREENS = {
             <span style="flex:1;min-width:200px">${esc(descLabel)}</span>
             ${state.describeState === "off" ? `<span class="seg" role="group" aria-label="Describe photos"><button type="button" id="dNo" aria-pressed="true">Not now</button><button type="button" id="dYes" aria-pressed="false">Yes, overnight</button></span>` : ""}
           </div>
-          <p class="quiet">${esc(copy.startup)} ${esc(copy.progress)} Only the photos you chose.</p>`
+          <p class="quiet">${esc(copy.startup)} ${esc(copy.progress)} Only the photos you chose.</p>
+          ${!r.startsItself && r.autostartError ? `<p class="quiet">Start-on-boot couldn't be set up: ${esc(r.autostartError)}</p>` : ""}`
           : !state.error ? `<p class="quiet">Reading your newest photos first so you can see them tonight. The rest arrive while you sleep.</p>` : ""}
         </div>
       </div>`,

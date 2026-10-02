@@ -124,6 +124,21 @@ function windowsLauncher({ exe, env, httpPort = 8484, tlsPort = 8485 }) {
   return lines.join("\r\n") + "\r\n";
 }
 
+// systemd-analyze verify also loads the units ours depends on and reports
+// THEIR problems. Stock Ubuntu 26.04 prints
+//   /usr/lib/systemd/system/xfs_scrub_all.service:26: Support for option
+//   CPUAccounting= has been removed and it is ignored
+// which made start-on-boot fail on every clean install. A finding counts
+// unless it is a file:line report about a DIFFERENT unit file; anything that
+// names our unit, or names no file at all, still fails closed.
+function verifyFindings(stderr, unitPath) {
+  return String(stderr || "").split("\n").map((l) => l.trim()).filter(Boolean)
+    .filter((l) => {
+      const m = l.match(/^(\/\S+?):\d+:/);
+      return !m || m[1] === unitPath;
+    }).join("\n");
+}
+
 function fileSnapshot(file, io = fs) {
   return io.existsSync(file) ? io.readFileSync(file) : null;
 }
@@ -367,10 +382,11 @@ async function installLinux({ exe, envFile, httpPort = 8484, tlsPort = 8485 }, r
   // (StartLimitIntervalSec in the wrong section did exactly that). A silent
   // verify is the only "yes".
   const verify = await run("systemd-analyze", ["verify", unitPath]);
-  if (!verify.ok || verify.err.trim() !== "") {
+  const findings = verifyFindings(verify.err, unitPath);
+  if (!verify.ok || findings !== "") {
     const errors = [];
     restoreFile(unitPath, existing, errors, "restore unit");
-    return { ok: false, error: `systemd-analyze verify did not pass: ${verify.err.trim() || "exit nonzero"}` +
+    return { ok: false, error: `systemd-analyze verify did not pass: ${findings || "exit nonzero"}` +
       (errors.length ? `; rollback failed: ${errors.join("; ")}` : "") };
   }
   const steps = [
@@ -511,5 +527,5 @@ async function install({ exe, envFile, dataDir, httpPort = 8484, tlsPort = 8485 
   return { ok: false, error: "This system isn't supported yet (Linux and Windows are)." };
 }
 
-module.exports = { systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, installLinux, installWindows, mayWriteUnit,
+module.exports = { verifyFindings, systemdUnit, windowsTaskXml, windowsLauncher, parseEnvFile, install, installLinux, installWindows, mayWriteUnit,
   scheduledTaskSnapshot, firewallSnapshot, parseTaskXml, decodeConsoleOutput, consoleCodePage, TASK_NAMESPACE, UNIT, TASK, MARKER };
