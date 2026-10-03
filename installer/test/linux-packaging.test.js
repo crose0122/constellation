@@ -52,6 +52,9 @@ test("linux targets: deb is the primary target, AppImage kept as secondary", () 
 // electron-builder can copy it into the .deb.
 test("dist:linux normalization clears group/other-write from a umask-002 profile (#218)", () => {
   const os = require("node:os");
+  // Load-bearing only while dist:linux keeps a NUMERIC mode: a future move to symbolic
+  // modes (u=rw,go=r) leaves this match and the dist:linux string assert above with nothing
+  // to bite on, reding two correct tests — change both together (#220).
   const m = pkg.scripts["dist:linux"].match(/chmod (\d{4}) (linux\/apparmor\/constellation-setup)/);
   assert.ok(m, "dist:linux must chmod the profile to an explicit mode before the build");
   const [, mode, rel] = m;
