@@ -131,11 +131,22 @@ function windowsLauncher({ exe, env, httpPort = 8484, tlsPort = 8485 }) {
 // which made start-on-boot fail on every clean install. A finding counts
 // unless it is a file:line report about a DIFFERENT unit file; anything that
 // names our unit, or names no file at all, still fails closed.
+//
+// Our unit's own drop-in directory counts as US: systemd applies
+// constellation.service.d/*.conf on top of the unit, so a warning there
+// (including an unknown key on the very section the drop-in tries to change)
+// describes a broken effective unit even though it names a different file.
+// Reading the unit's own text cannot see drop-ins, so without this an
+// unusable install would be enabled and reported as verified. The match is
+// anchored: `constellation.service.d-other/x` is NOT our drop-in directory.
+function isOurs(file, unitPath) {
+  return file === unitPath || file.startsWith(unitPath + ".d/");
+}
 function verifyFindings(stderr, unitPath) {
   return String(stderr || "").split("\n").map((l) => l.trim()).filter(Boolean)
     .filter((l) => {
       const m = l.match(/^(\/\S+?):\d+:/);
-      return !m || m[1] === unitPath;
+      return !m || isOurs(m[1], unitPath);
     }).join("\n");
 }
 
