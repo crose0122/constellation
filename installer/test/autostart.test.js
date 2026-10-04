@@ -1127,6 +1127,25 @@ test("verify findings: unrelated system units are ignored, ours still fail close
   assert.equal(a.verifyFindings("", unit), "");
 });
 
+// 2026-10-02 post-merge review (task #216): systemd applies
+// constellation.service.d/*.conf on top of the unit, so a finding in the
+// install's OWN drop-in describes a broken effective unit and must still fail
+// closed — naming a different file is not enough to excuse it.
+test("verify findings: the unit's own drop-in directory still fails closed", () => {
+  const unit = "/home/example/.config/systemd/user/constellation.service";
+  const dropin = `${unit}.d/override.conf`;
+  const ours = `${dropin}:2: Unknown key 'BogusKey' in section [Service], ignoring.`;
+  const stock = "/usr/lib/systemd/system/xfs_scrub_all.service:26: Support for option CPUAccounting= has been removed and it is ignored";
+  assert.equal(a.verifyFindings(stock + "\n" + ours, unit), ours,
+    "a warning in our own drop-in means the effective unit is not clean");
+  // Anchored: a similarly-named directory is not our drop-in.
+  const lookalike = `${unit}.d-other/override.conf:2: Unknown key 'BogusKey' in section [Service], ignoring.`;
+  assert.equal(a.verifyFindings(lookalike, unit), "",
+    "only constellation.service.d/ is ours, not a name that merely starts with it");
+  assert.equal(a.verifyFindings(`${dropin}:2: Unknown key 'X', ignoring.`, unit),
+    `${dropin}:2: Unknown key 'X', ignoring.`);
+});
+
 test("installLinux writes the picked ports into the unit it actually installs", async () => {
   // Mutation check (2026-10-02): dropping the ports here left every test green
   // while the unit bound 8484/8485 and the firewall, readiness check and links
