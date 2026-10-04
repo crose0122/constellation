@@ -35,12 +35,39 @@ test("linux targets: deb is the primary target, AppImage kept as secondary", () 
   assert.equal(targets[0], "deb");
   assert.ok(targets.includes("AppImage"));
   // gen:assets (asset-manifest build step, #137) may run first; the profile chmod must
-  // still immediately precede the deb/AppImage build.
+  // still immediately precede the deb/AppImage build. This chmod is the guarantee that the
+  // PACKAGED profile is 0644: fpm copies the source mode into the .deb, and dist:linux
+  // normalizes it immediately before electron-builder runs. Do not also assert the
+  // working-tree mode here — git records only the exec bit, so a 100644 entry checked out
+  // under umask 002 lands at 0664 and a tree stat reds the suite for every developer on a
+  // group-writable box, independent of anyone's change (#218). The built-.deb test near the
+  // end of this file checks the mode that actually shipped.
   assert.match(pkg.scripts["dist:linux"],
     /^(npm run gen:assets && )?chmod 0644 linux\/apparmor\/constellation-setup && electron-builder --linux deb AppImage$/);
-  // fpm copies the source mode into the package; a group-writable checkout (umask 002)
-  // would ship a group-writable security profile.
-  assert.equal(fs.statSync(path.join(ROOT, "linux/apparmor/constellation-setup")).mode & 0o022, 0);
+});
+
+// #218 regression: the suite must not depend on the checkout's own file mode. Prove the
+// packaging step actually normalizes whatever mode the checkout produced: a 0664 source
+// (exactly what umask 002 leaves) must come out 0644 — no group/other-write bits — before
+// electron-builder can copy it into the .deb.
+test("dist:linux normalization clears group/other-write from a umask-002 profile (#218)", () => {
+  const os = require("node:os");
+  const m = pkg.scripts["dist:linux"].match(/chmod (\d{4}) (linux\/apparmor\/constellation-setup)/);
+  assert.ok(m, "dist:linux must chmod the profile to an explicit mode before the build");
+  const [, mode, rel] = m;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cst-mode-"));
+  const src = path.join(dir, "constellation-setup");
+  try {
+    fs.copyFileSync(path.join(ROOT, rel), src);
+    fs.chmodSync(src, 0o664); // exactly what a umask-002 checkout lands
+    assert.equal(fs.statSync(src).mode & 0o022, 0o020, "fixture must start group-writable");
+    execFileSync("chmod", [mode, src]);
+    const packaged = fs.statSync(src).mode & 0o7777;
+    assert.equal(packaged & 0o022, 0, `packaged profile mode 0${packaged.toString(8)} is still writable`);
+    assert.equal(packaged, 0o644);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("deb installs the AppArmor profile as a file at /etc/apparmor.d", () => {
