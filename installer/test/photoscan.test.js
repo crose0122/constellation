@@ -141,3 +141,35 @@ test("scan reads a folder once when two paths lead to it (same device and inode)
   const r = await ps.scanForPhotos({ roots: [{ path: "/h", label: "Home" }], io });
   assert.equal(r.places.length, 1, "the alias must not be listed or counted twice");
 });
+
+// Mutation check (2026-10-04): the walk-time ctx.excluded guard had no test —
+// removing it left the whole photoscan suite green. It is the ONLY thing that
+// stops the walk descending INTO an excluded folder, and summarizeFolder
+// ("I'll pick a folder") has no root-level check of its own, so a family who
+// picks their home folder — with the backup drive mounted under it — would get
+// the backup's photos counted as import sources.
+test("the walk never descends into an excluded folder (summarizeFolder)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "photoscan-excl-"));
+  try {
+    const home = path.join(tmp, "home");
+    const backup = path.join(home, "USB-Backup");          // a drive mounted under home
+    for (let i = 0; i < 30; i++) put(backup, `Family 2019/DSC${i}.jpg`);
+    put(home, "Pictures/Camera/IMG_1.jpg");
+    const r = await ps.summarizeFolder(home, { exclude: [backup] });
+    assert.equal(r.place.photos, 1, "the excluded backup drive was walked into");
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("the scan excludes an excluded folder nested inside a scanned one, and says so", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "photoscan-nested-"));
+  try {
+    const home = path.join(tmp, "home");
+    const backup = path.join(home, "USB-Backup");
+    for (let i = 0; i < 30; i++) put(backup, `Family 2019/DSC${i}.jpg`);
+    put(home, "Pictures/Camera/IMG_1.jpg");
+    const r = await ps.scanForPhotos({ roots: [{ path: home, label: "Home" }], exclude: [backup] });
+    assert.equal(r.places.some((p) => p.path === backup || p.path.startsWith(backup + path.sep)),
+      false, "an excluded folder must never appear as a place");
+    assert.equal(r.places.some((p) => p.photos >= 30), false, "its photos must not be counted");
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});

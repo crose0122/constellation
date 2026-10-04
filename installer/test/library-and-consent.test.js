@@ -39,6 +39,29 @@ test("library root: a second path to the home folder is still the home folder", 
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
+// Mutation check (2026-10-04): the device/inode backup-overlap check in
+// setup.libraryLocationError had no test — removing it left the whole installer
+// suite at its pre-existing pass count. decide.validateLibraryRoot compares
+// TEXT only, so a library folder that is a symlink/bind alias of the backup
+// drive slips past it and is caught ONLY by the device+inode check here.
+test("library root: a second path to the backup drive is still the backup drive", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bk-guard-"));
+  try {
+    const drive = path.join(tmp, "USB");
+    fs.mkdirSync(path.join(drive, "Family 2019"), { recursive: true });
+    const alias = path.join(tmp, "alias-of-usb");
+    fs.symlinkSync(drive, alias);                 // stands in for a bind mount
+    const err = (lib, backup) => s.libraryLocationError(
+      { libraryRoot: lib, sources: [], backupTarget: backup }, { home: path.join(tmp, "home") });
+    assert.match(err(path.join(alias, "Constellation", "library"), drive), /backup drive/);
+    assert.match(err(path.join(alias, "Constellation"), drive), /backup drive/);
+    assert.match(err(path.join(drive, "Constellation", "library"), alias), /backup drive/,
+      "a text-only check cannot see the alias; the device/inode check must catch it");
+    assert.equal(err(path.join(tmp, "own-drive", "Constellation"), drive), null,
+      "two genuinely different folders are not a backup overlap");
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
 test("prepare refuses a bad library location before running anything", async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "prep-"));
   try {
