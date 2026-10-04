@@ -12,7 +12,14 @@ cd "$(git rev-parse --show-toplevel)"
 PUSH_LINES=$(cat)
 
 echo "[pre-push] leak scan…"
-python3 -m unittest -v tools/test_leak_scan.py
+# PYTHONDONTWRITEBYTECODE: the unittest run below imports this directory's own
+# tools/, so Python writes tools/__pycache__/*.pyc. Those are non-ignored
+# untracked files, and the bytecode embeds the checkout's ABSOLUTE source path,
+# so the very next line's private-path rule matched them and failed the push —
+# a pristine clone with no local edits could not be pushed at all. Bytecode off
+# is the narrow fix: no artifact is created for the scan to find. The scanner
+# itself is unchanged.
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tools/test_leak_scan.py
 python3 tools/leak_scan.py --require-private-denylist
 echo "[pre-push] pushed commits + messages scan…"
 # Every commit this push publishes (not what is checked out): its stored
