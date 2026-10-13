@@ -190,6 +190,24 @@ class RawTest(_Lib):
         self.assertEqual(stats["archived"], 5)
 
 
+class LivePhotoTest(_Lib):
+    def test_live_photo_motion_half_is_ignored_without_touching_source(self):
+        from unittest.mock import patch
+        from memoryvault import video
+
+        clip = self.src / "IMG_0001.MOV"
+        clip.write_bytes(b"synthetic Live Photo motion half")
+        before = _sha(clip)
+        with patch.object(video, "probe", return_value={"live_photo": True}):
+            stats = self.ingest()
+
+        self.assertEqual(stats["live_photo"], 1)
+        row = self.conn.execute("SELECT disposition FROM files WHERE source_path LIKE '%IMG_0001.MOV'").fetchone()
+        self.assertEqual(row["disposition"], "live-photo")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0], 0)
+        self.assertEqual(_sha(clip), before, "the source motion file must remain untouched")
+
+
 class SizeCapTest(_Lib):
     def test_over_cap_is_skipped_before_hashing_with_a_plain_reason(self):
         big = self.src / "long-video.mp4"
@@ -212,6 +230,31 @@ class SizeCapTest(_Lib):
 
     def test_default_cap_is_4_gb(self):
         self.assertEqual(self._saved[2], 4 * 1000**3)
+
+    def test_real_sparse_file_over_4_gb_is_rejected_without_reading(self):
+        from memoryvault import discover
+        import memoryvault.ingest as ing
+
+        config.MAX_FILE_BYTES = self._saved[2]
+        big = self.src / "four-gigabyte-video.mp4"
+        with big.open("wb") as f:
+            f.truncate(config.MAX_FILE_BYTES + 1)
+        hashed = []
+        real = ing.sha256_file
+        ing.sha256_file = lambda p: hashed.append(p) or ("0" * 64)
+        try:
+            discover.discover(self.conn, self.src)
+            stats = ing.ingest(self.conn)
+        finally:
+            ing.sha256_file = real
+            big.unlink(missing_ok=True)
+
+        self.assertEqual(stats["too_large"], 1)
+        self.assertEqual(hashed, [], "a real >4 GB file must be rejected before reading it")
+        row = self.conn.execute("SELECT disposition FROM files").fetchone()
+        self.assertEqual(row["disposition"], "too-large")
+        error = self.conn.execute("SELECT error FROM errors WHERE stage='ingest'").fetchone()[0]
+        self.assertIn("Constellation skips files over 4.0 GB", error)
 
     def test_message_units_read_naturally(self):
         from memoryvault.formats import too_large_message
