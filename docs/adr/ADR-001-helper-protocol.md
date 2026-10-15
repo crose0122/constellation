@@ -1,6 +1,6 @@
 # ADR-001 — Helper protocol (CP4)
 
-**Status:** Proposed 2026-09-23.
+**Status:** Proposed — revised 2026-10-15; pending independent CP0 review. This revision does not authorize implementation or open any network surface.
 **Spec:** V2 §4.1 (B1, B2), gate 3. **Invariants:** 1 (LAN-only), 2 (originals untouched).
 
 ## Context
@@ -10,23 +10,38 @@ Photos live on several family computers. The server has to find and pull them wi
 1. **Shape.** A small, single-purpose daemon for Linux (systemd user unit) and Windows (a scheduled task at logon, running as the user). It runs in the user's session so it only ever sees what that user can see.
 2. **Discovery.** It advertises `_constellation-helper._tcp` over mDNS. The TXT record carries only a random `helper_id` and a protocol version. It never carries a hostname, user name or folder list.
 3. **Pairing.**
-   - At first run, the helper shows a 6-digit code on its own screen.
-   - An adult enters that code in the server wizard. The code must be confirmed on the helper's machine.
-   - The two sides exchange self-signed certificates over a PAKE-style check (SPAKE2 using the code), then **pin each other**.
-   - After pairing, every connection is mutual TLS with those pinned certificates. An unpaired client gets a TLS failure and never sees the API.
-4. **Consent.** The user ticks the folders to offer **on the helper's machine**. The server can only ask about folders from that list. Consent is stored locally and can be revoked on the helper at any time.
+   - At first run, the helper generates a uniformly random six-decimal-digit code with the operating system CSPRNG. It displays the code only in the local helper UI; the code is never written to logs, telemetry, command-line arguments, or a reusable verifier file.
+   - A pairing attempt expires after 2 minutes and is single-use, whether it succeeds or fails. The adult enters the code in the server wizard and confirms the peer identity on the helper itself. Discovery data is only a locator; an mDNS response, helper ID, IP address, or successful TCP connection is never evidence of identity or consent.
+   - Pairing uses SPAKE2 as the only code-authenticated key exchange. CP0 must select and pin a maintained implementation and its exact parameter set before implementation; no fallback to a custom PAKE, unauthenticated key exchange, or plain code comparison is allowed. The authenticated transcript includes the protocol version, both random nonces, helper ID, both role labels, and the SHA-256 fingerprints of both certificate public keys. Both sides verify the transcript and explicit key confirmation before storing either pin. A mismatched transcript or identity aborts pairing and erases ephemeral secrets.
+   - The helper allows at most 5 failed code attempts per pairing window. On the fifth failure, the code is invalidated and pairing is locked for 15 minutes; the lockout survives process restart. A new code is generated only by a local adult action after the lockout. The server also applies a per-helper attempt limit. The PAKE exchange must not expose a reusable offline-verifiable code oracle; the short code is never accepted as a normal password or as a TLS credential.
+   - Each side creates a distinct self-signed TLS certificate and pins the peer certificate fingerprint only after successful PAKE and transcript confirmation. All API connections require TLS 1.3 mutual authentication, exact pinned-certificate matching, and the paired helper identity. TLS 1.2 and weaker versions are rejected. Pins are scoped to one helper/server pair; there is no trust-on-first-use or certificate-authority-wide trust.
+   - The listener binds only to an explicitly selected, non-loopback LAN interface; it never binds to `0.0.0.0`, `::`, or a public interface. A firewall rule restricts inbound access to the selected local subnet and paired peer address where the platform permits. The helper independently rejects non-local-subnet peers. These network checks reduce exposure but do not replace mutual TLS or consent. mDNS is untrusted discovery only and is not required for a manually entered, locally confirmed pairing.
+   - The server stores helper pins and the helper stores server pins in per-user, owner-readable-only files (POSIX mode 0600, or equivalent user-only ACL on Windows). Private keys are non-exportable where supported; otherwise they are owner-only and excluded from all logs/backups. No global or shared household credential is used.
+   - Re-pairing, certificate rotation, local unpair, consent revocation, or an authentication failure invalidates the affected pin/session. Revocation is effective immediately: the helper closes active TLS sessions and streams, rejects subsequent requests, removes the server pin, and requires a fresh locally confirmed pairing. The server likewise invalidates its session and pin. Failure to persist or confirm revocation fails closed; restarting a process must not resurrect a revoked session.
+4. **Consent.** The adult selects folders on the helper machine. The helper stores an explicit allowlist of canonical root identifiers and the consent record locally. The server can request only listed roots; it cannot add roots remotely. Revocation is local, immediate, and atomically closes active streams and invalidates the paired session as described above. Consent changes require a fresh local confirmation and are audited without recording file names or personal paths.
 5. **API: read-only by construction.**
-   - `GET /v1/folders` returns the consented roots, with counts and total size.
-   - `GET /v1/list?root=<id>&cursor=` pages through files: relative path, size, mtime and a content hash (computed lazily and cached).
-   - `GET /v1/file?root=<id>&path=` streams the bytes. It supports `Range`, so interrupted transfers resume.
-   - **There are no write, move, rename or delete verbs.** The HTTP router has only these three GET routes, and any other method or path returns 405/404.
-   - **Path safety.** A path is resolved against the root with no-follow semantics. A path that leaves the root, is a symlink or hard link out of the root, a device file, or a `..` component is refused with 404. It is never "clamped" into the root.
-6. **Server side.** The import engine (CP4) records a per-file cursor and hash, so an import can survive a reboot on either end. Anything already present by hash is skipped.
+   - `GET /v1/folders` returns opaque identifiers for consented roots, with bounded counts and total size; it never discloses absolute local paths.
+   - `GET /v1/list?root=<id>&cursor=` pages through files using an opaque, integrity-protected, expiring cursor bound to the helper, root, consent generation, and source snapshot. The response contains only relative paths, size, modification time, and a content hash.
+   - `GET /v1/file?root=<id>&path=` streams bytes for an authorized regular file. It supports bounded `Range` requests for resume, but revalidates the certificate, consent, root, path, file identity, and authorization on every request and every range.
+   - Request-line, header, query, path, page, concurrent-stream, range-count, and byte-rate limits are mandatory and fail closed. The protocol does not return absolute paths or distinguish outside-root paths in error text.
+   - **There are no write, move, rename, delete, upload, or arbitrary proxy verbs.** The router exposes only these three GET routes; all other methods and paths return 405/404. State-changing behavior is not added as an extension to this protocol.
+   - **Path safety.** Paths are relative, normalized, and reject absolute paths, `..`, encoded separators, NUL, alternate data streams, device names, symlinks, reparse points, and non-regular files. Implementations must open each path component relative to a held root handle without following links, then verify the final file identity remains beneath the consented root at use time. POSIX implementations use an `openat2`-equivalent constrained beneath/no-symlink resolution or a reviewed component-by-component `openat` walk; Windows implementations open relative to a held directory handle and reject reparse-point traversal. Reject files with multiple hard links rather than claiming an out-of-root hard link can be detected. Never validate a pathname and later reopen it by pathname.
+   - Listing and streaming use the opened file identity, not a later path lookup. Hashing is SHA-256 over the bytes actually read. Before and after a stream, compare file identity, size, and modification/version metadata; if the source changes, terminate with a stale-source error and do not report a successful complete transfer. Cursors become invalid when consent is revoked or the source snapshot changes.
+6. **Server side.** The import engine is a separate CP4 component and is not approved by this protocol ADR. It must record a per-file cursor and verified hash, survive reboot without duplicate imports, and treat a stale cursor/source as a rescan rather than trusting stale metadata. It may not broaden helper consent or alter originals. Import-engine network exposure and implementation require the CP1-before-network gate plus a separate exact-tree review and acceptance.
+
+## Required security evidence before CP0 approval
+- Select and pin the maintained SPAKE2 implementation and exact parameters; document the threat model and demonstrate that no reusable offline-verifiable code oracle exists.
+- Tests prove code expiry, single-use behavior, attempt limit, persistent lockout, wrong/replayed transcript rejection, identity/certificate mismatch rejection, and resistance to mDNS spoofing as an authentication bypass.
+- Tests prove unpaired, expired, locally unpaired, consent-revoked, and certificate-revoked peers cannot make or continue API requests; active streams stop on revocation.
+- Tests cover interface/firewall binding, non-local peer rejection, TLS version and client-certificate matrix, every method/path, request/resource limits, malformed and encoded paths, symlink/reparse and rename races, hard-link rejection, Range boundaries, stale cursors, source mutation during hash/stream, and unchanged source checksums.
+- The exact test inventory includes positive controls proving valid paired/consented access still works. No test may be weakened, skipped, or replaced with a mock-only assertion to claim acceptance.
 
 ## Consequences
 - Tests have to prove the helper cannot write, rename or delete anything (checksums before and after, over the full API surface with fuzzed paths).
-- Tests have to prove an unpaired client is refused at the TLS layer.
+- Tests have to prove an unpaired client is refused at the TLS layer and that revoked or expired peers cannot retain access.
+- LAN-only is enforced by binding, firewall policy, peer checks, and TLS; mDNS discovery alone never grants trust.
 - One more small binary to package on each OS, reusing the CP2 packaging.
+- This ADR remains Proposed until its implementation choices and CP0 evidence are independently reviewed against the canonical blob. It does not authorize CP4 coding, CP1 advancement, a release, or deployment.
 
 ## Rejected
 - **SMB/NFS shares:** needs admin setup on every machine, and it's read/write by default.
