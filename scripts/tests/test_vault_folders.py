@@ -7,6 +7,7 @@ are private) and the three web pages carry no hard-coded folder name.
 
 Run: python3 -m pytest tests/test_vault_folders.py -q
 """
+import hashlib
 import importlib
 import os
 import re
@@ -65,9 +66,11 @@ class VaultFoldersTest(unittest.TestCase):
             for i, dest in enumerate(("alex", "../escape", "casey")):
                 f = config.LIBRARY_ROOT / "originals" / f"p{i}.jpg"
                 f.write_bytes(b"\xff\xd8\xff" + bytes([i]) * 64)
+                # the row's sha must be the file's real sha: route_to_vault
+                # verifies the vault copy against it before scrubbing
                 pid = conn.execute(
                     "INSERT INTO photos(sha256, status, library_path, created_at) VALUES (?, 'screened', ?, 'now')",
-                    (f"{i:064d}", f"originals/p{i}.jpg")).lastrowid
+                    (hashlib.sha256(f.read_bytes()).hexdigest(), f"originals/p{i}.jpg")).lastrowid
                 vault.route_to_vault(conn, pid, review=False, dest=dest)
             self.assertEqual(len(list((config.VAULT_MOUNT / "alex").iterdir())), 1)
             self.assertFalse((config.VAULT_MOUNT / "casey").exists(), "unconfigured name never becomes a folder")
