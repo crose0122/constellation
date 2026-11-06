@@ -225,6 +225,7 @@ def screen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit) -> dict:
             f"vault not mounted at {config.VAULT_MOUNT}; run vault-open first "
             "(flagged items must have somewhere safe to go)"
         )
+    vault.recover_interrupted(conn)    # finish/undo any half-done vault move
 
     run = start_run(conn, "screen")
     rows = conn.execute("SELECT * FROM photos WHERE status = 'staged'").fetchall()
@@ -261,6 +262,17 @@ def screen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit) -> dict:
                 record_error(conn, "screen", "screening error (see logs)",
                              photo_id=row["id"])
             _retry_locked(conn.commit)
+        except vault.VaultCleanupIncomplete:
+            # the photo IS vaulted and scrubbed; only a library file is left
+            # behind, and the vault journal finishes it on the next run. No
+            # photo_id: that row no longer exists and must not be re-linked.
+            stats[ERROR] += 1
+            try:
+                record_error(conn, "screen", "vault cleanup incomplete "
+                             "(journalled; finishes on next run)")
+                conn.commit()
+            except Exception:
+                pass
         except Exception as e:
             # One unscreenable photo must not strand the rest. It keeps
             # status='staged', so the next run picks it up again.
@@ -288,6 +300,7 @@ def rescreen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit,
             f"vault not mounted at {config.VAULT_MOUNT}; run vault-open first "
             "(flagged items must have somewhere safe to go)"
         )
+    vault.recover_interrupted(conn)    # finish/undo any half-done vault move
 
     run = start_run(conn, "rescreen")
     sql = (
@@ -339,7 +352,19 @@ def rescreen(conn, score_fn=pass1_score, confirm_fn=confirm_explicit,
                              photo_id=row["id"])
             conn.commit()
 
-        _retry_locked(_write)
+        try:
+            _retry_locked(_write)
+        except (vault.VaultSourceMissing, vault.VaultIntegrityError) as e:
+            # nothing moved, nothing scrubbed: log it and keep sweeping
+            stats[verdict] -= 1
+            stats[ERROR] += 1
+            record_error(conn, "rescreen", repr(e), photo_id=row["id"])
+            conn.commit()
+        except vault.VaultCleanupIncomplete:
+            stats[ERROR] += 1
+            record_error(conn, "rescreen", "vault cleanup incomplete "
+                         "(journalled; finishes on next run)")
+            conn.commit()
         if i % 200 == 0:
             print(f"  {i}/{len(rows)} rescreened, "
                   f"{stats[VAULT]} vaulted, {stats[REVIEW]} to review",

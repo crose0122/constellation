@@ -275,7 +275,17 @@ def cmd_vault(args):
     elif args.action == "open":
         vault.open_vault()
         with _conn() as conn:
+            rec = vault.recover_interrupted(conn)
             n = vault.backfill_ledger(conn)
+        if rec["completed"] or rec["rolled_back"]:
+            print(f"interrupted vault moves: {rec['completed']} finished, "
+                  f"{rec['rolled_back']} undone")
+        if rec.get("busy"):
+            print("a vault move is running right now; the interrupted-move "
+                  "check was skipped (screen runs it again)")
+        if rec["needs_attention"]:
+            print(f"{len(rec['needs_attention'])} interrupted vault move(s) "
+                  "need a human: see <vault>/.pending/")
         if n:
             print(f"vaulted-sha ledger: {n} entries backfilled")
     elif args.action == "close":
