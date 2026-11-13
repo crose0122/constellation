@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   leak-scan:
     runs-on: ubuntu-24.04
@@ -49,9 +53,23 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - name: Install test deps (no model weights, no network at test time)
+          cache: pip
+          cache-dependency-path: .github/workflows/tests.yml
+      - name: Install ffmpeg (bounded; a hung apt mirror must not eat the job)
+        timeout-minutes: 6
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          if command -v ffmpeg >/dev/null; then ffmpeg -version | head -1; exit 0; fi
+          for i in 1 2 3; do
+            if timeout 150 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq \
+              && timeout 150 sudo apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends ffmpeg; then
+              exit 0
+            fi
+            echo "apt attempt $i failed; retrying" >&2; sleep 10
+          done
+          exit 1
+      - name: Install test deps (no model weights, no network at test time)
+        timeout-minutes: 6
+        run: |
           pip install --quiet "pillow>=11,<13" "pillow-heif>=0.18,<2" "imagehash>=4.3,<5" \
             "requests>=2.32,<3" "numpy>=1.26,<3" "pyyaml>=6,<7" "pytest>=8,<9" \
             "cryptography>=43,<47" "onnxruntime>=1.18,<2"
@@ -66,6 +84,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22.12.0"
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
       - name: Install installer deps from the lockfile (skip Electron's binary download)
         working-directory: installer
         run: npm ci --ignore-scripts --no-audit --no-fund
