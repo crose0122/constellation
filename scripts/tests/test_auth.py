@@ -120,6 +120,7 @@ class ClassificationTest(_Base):
 class OpenSurfacesTest(_Base):
     def test_picture_frame_needs_no_pin(self):
         for path in ("/", "/wall", "/ambient", "/memories", "/gallery", "/api/progress",
+                     "/menu", "/start",
                      "/api/categories", "/api/gallery", "/login", "/static/pin.js"):
             status, *_ = self.req("GET", path)
             self.assertNotIn(status, (401, 403), path)
@@ -147,7 +148,8 @@ class PrivateSurfacesTest(_Base):
     # would let a route silently drop out of the test the moment someone
     # reclassifies it as OPEN (mutation-proven: /api/purge -> OPEN passed).
     PRIVATE_READS = ["/people", "/person", "/curation", "/api/people", "/api/person",
-                     "/api/curation", "/api/purged", "/api/vaulted", "/face/abc.jpg"]
+                     "/api/curation", "/api/purged", "/api/vaulted", "/face/abc.jpg",
+                     "/api/setup/where"]
     WRITES = ["/api/people/notthem", "/api/people/removeall", "/api/people/label",
               "/api/purge", "/api/photo/share", "/api/photo/vault",
               "/api/photo/markdelete", "/api/photo/remove", "/api/curation/restore"]
@@ -271,6 +273,42 @@ class StorageTest(_Base):
         self.assertTrue(auth.check_pin(PIN))
         self.assertFalse(auth.check_pin(PIN + "0"))
         self.assertFalse(auth.check_pin(""))
+
+
+class OnboardingTest(_Base):
+    """Nobody is stranded on a wall with no way out, and the
+    getting-started page can say where the photos live — exact folders only
+    after the family PIN."""
+
+    def test_where_needs_pin_and_answers_after_sign_in(self):
+        status, *_ = self.req("GET", "/api/setup/where",
+                              {**TLS, "Accept": "application/json"})
+        self.assertEqual(status, 401)
+        _, jar = self.login()
+        status, _, body, _ = self.req("GET", "/api/setup/where",
+                                      {"Cookie": self.cookie_header(jar), **TLS})
+        self.assertEqual(status, 200)
+        w = json.loads(body)
+        self.assertEqual(w["library"], str(config.LIBRARY_ROOT))
+        self.assertEqual(w["vault"], str(config.VAULT_MOUNT))
+        self.assertIsInstance(w["vault_open"], bool)
+
+    def test_open_start_page_never_embeds_a_path(self):
+        status, _, body, _ = self.req("GET", "/start")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Getting started", body)
+        self.assertNotIn(str(config.LIBRARY_ROOT).encode(), body)
+        self.assertNotIn(str(config.VAULT_MOUNT).encode(), body)
+
+    def test_wall_has_a_way_out_and_an_empty_state(self):
+        _, _, body, _ = self.req("GET", "/wall")
+        self.assertIn(b'href="/menu"', body)
+        self.assertIn(b'href="/start"', body)
+        self.assertIn(b'id="empty"', body)
+
+    def test_menu_links_getting_started(self):
+        _, _, body, _ = self.req("GET", "/menu")
+        self.assertIn(b'href="/start"', body)
 
 
 class ShareTest(_Base):

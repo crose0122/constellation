@@ -109,15 +109,44 @@
   }
   .cap:empty { opacity: 0; }
   .frame .cap { left: 14%; right: 14%; bottom: calc(var(--mat) * 0.35); }
+  /* The way out: a small "Menu" pill bottom-right. Shown on arrival, then it
+     fades so the family display is just a wall — and it comes back the
+     moment someone moves the mouse, touches the screen or presses a key
+     (spec v2 A7: nobody should be stranded on a wall with no way out). */
   #hint {
-    position: fixed; bottom: 8px; right: 12px; z-index: 5;
-    font-size: 0.7rem; color: #d9c9a855;
-    /* visible long enough to find your way back, then the wall is just a
-       wall — no chrome on the family display */
-    animation: hintfade 1.5s ease 12s forwards;
+    position: fixed; bottom: 10px; right: 12px; z-index: 6;
+    display: flex; gap: 0.5rem; transition: opacity .6s ease, visibility .6s;
   }
-  #hint a { color: #d9c9a888; }
-  @keyframes hintfade { to { opacity: 0; visibility: hidden; } }
+  #hint.away { opacity: 0; visibility: hidden; }
+  #hint a {
+    font-size: 0.85rem; text-decoration: none; color: #e8dcc2;
+    background: #241b12e6; border: 1px solid #6b5a3a; border-radius: 999px;
+    padding: 0.45rem 1rem; min-height: 44px; display: inline-flex; align-items: center;
+  }
+  #hint a:hover, #hint a:focus-visible { background: #3a2c1d; outline: 2px solid #e8c98a; outline-offset: 2px; }
+  /* Empty wall: a fresh install has frames but no pictures yet. Say so, show
+     the first sweep counting up, and point at the getting-started page. */
+  #empty {
+    position: fixed; inset: 0; z-index: 5; display: none;
+    align-items: center; justify-content: center; padding: 1.5rem;
+  }
+  #empty.on { display: flex; }
+  #empty .card {
+    max-width: 30rem; text-align: center; background: #120e0aee;
+    border: 1px solid #6b5a3a; border-radius: 16px; padding: 1.6rem 1.6rem 1.4rem;
+    box-shadow: 0 1.5rem 4rem #000a; color: #e8dcc2;
+  }
+  #empty h1 { font-size: 1.35rem; font-weight: 600; margin-bottom: 0.5rem; }
+  #empty p { color: #c9b896; font-size: 0.95rem; line-height: 1.45; }
+  #empty .live { margin-top: 0.8rem; color: #f2d79b; font-variant-numeric: tabular-nums; }
+  #empty .acts { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; margin-top: 1.1rem; }
+  #empty a {
+    text-decoration: none; padding: 0.6rem 1.2rem; border-radius: 999px; min-height: 44px;
+    display: inline-flex; align-items: center; border: 1px solid #6b5a3a; color: #e8dcc2;
+  }
+  #empty a.primary { background: #e8c98a; color: #1a130b; border-color: #e8c98a; font-weight: 600; }
+  #empty a:focus-visible { outline: 2px solid #f2d79b; outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { #hint { transition: none; } }
 
 /* Tap a picture on the wall to open it here: full-screen, with the same
    actions the gallery offers. The wall keeps breathing behind it, but the
@@ -154,7 +183,20 @@
     <button id="wlbVault" class="vault">Move to Personal Vault</button>
   </div>
 </div>
-<div id="hint"><a href="/">← constellation</a></div>
+<nav id="hint" aria-label="Constellation">
+  <a href="/menu" id="menuLink">☰ Menu</a>
+</nav>
+<section id="empty" aria-live="polite" aria-labelledby="emptyTitle">
+  <div class="card">
+    <h1 id="emptyTitle">Your wall is ready for photos</h1>
+    <p id="emptyMsg">No pictures have reached the wall yet.</p>
+    <p class="live" id="emptyLive"></p>
+    <div class="acts">
+      <a class="primary" href="/start">Show me how</a>
+      <a href="/menu">Menu</a>
+    </div>
+  </div>
+</section>
 <script src="/static/pin.js"></script>
 <script>
 const qs = new URLSearchParams(location.search);
@@ -547,15 +589,66 @@ if (KIOSK) {
   // it instead (that handler stops the event before it reaches us)
   addEventListener("pointerdown", (ev) => {
     if (wlb.contains(ev.target) || wlb.classList.contains("on")) return;
+    if (hint.contains(ev.target) || emptyEl.contains(ev.target)) return;
     location.href = home;
   });
 }
 
+/* ---------- the way out + the empty wall ---------- */
+const hint = document.getElementById("hint");
+const emptyEl = document.getElementById("empty");
+const HINT_MS = 12000;   // visible on arrival, then the wall is just a wall
+let hintTimer = null;
+function showHint() {
+  hint.classList.remove("away");
+  clearTimeout(hintTimer);
+  // keep it while someone is on it (keyboard focus or the empty card)
+  hintTimer = setTimeout(() => {
+    if (hint.contains(document.activeElement) || emptyEl.classList.contains("on")) return;
+    hint.classList.add("away");
+  }, HINT_MS);
+}
+for (const ev of ["pointermove", "pointerdown", "keydown"]) addEventListener(ev, showHint, { passive: true });
+
+async function updateEmpty() {
+  const empty = !pool.length;
+  emptyEl.classList.toggle("on", empty);
+  if (!empty) return;
+  const msg = document.getElementById("emptyMsg");
+  const live = document.getElementById("emptyLive");
+  let p = null;
+  try { p = await (await fetch("/api/progress")).json(); } catch (e) { p = null; }
+  const n = (x) => Number(x || 0).toLocaleString();
+  if (!p) {
+    msg.textContent = "No pictures have reached the wall yet.";
+    live.textContent = "";
+  } else if (!p.discovered && !p.active_stage) {
+    msg.textContent = "Constellation hasn't been pointed at any photos yet. "
+      + "\"Show me how\" walks you through it.";
+    live.textContent = "";
+  } else {
+    msg.textContent = "The first sweep is reading your newest photos. "
+      + "Pictures appear here as soon as they're checked — no need to stay.";
+    live.textContent = `Found ${n(p.discovered)} · read ${n(p.ingested)} · ready ${n(p.screen_done)}`;
+  }
+}
+
 (async function boot() {
+  showHint();
   await loadPool();
   start();
-  // refresh the pool hourly so newly-added photos join the wall
-  setInterval(loadPool, 3600 * 1000);
+  await updateEmpty();
+  // refresh the pool hourly so newly-added photos join the wall — every
+  // minute while the wall is still empty, so the first sweep shows up live
+  (function schedule() {
+    setTimeout(async () => {
+      await loadPool();
+      const wasEmpty = emptyEl.classList.contains("on");
+      if (wasEmpty && pool.length) start();
+      await updateEmpty();
+      schedule();
+    }, pool.length ? 3600 * 1000 : 60 * 1000);
+  })();
 })();
 </script>
 </body>
