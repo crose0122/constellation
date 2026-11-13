@@ -147,6 +147,18 @@
   #empty a.primary { background: #e8c98a; color: #1a130b; border-color: #e8c98a; font-weight: 600; }
   #empty a:focus-visible { outline: 2px solid #f2d79b; outline-offset: 3px; }
   @media (prefers-reduced-motion: reduce) { #hint { transition: none; } }
+  #spotlight { position: fixed; inset: 0; z-index: 70; display: none; align-items: center;
+    justify-content: center; padding: 1rem; background: #02060ddd; color: #e8dcc2; }
+  #spotlight.on { display: flex; }
+  #spotlight .card { width: min(32rem, 100%); padding: 1.5rem; border: 1px solid #8a6a3a;
+    border-radius: 16px; background: #120e0a; box-shadow: 0 1.5rem 4rem #000a; }
+  #spotlight h2 { font-size: 1.35rem; margin-bottom: .6rem; }
+  #spotlight p { line-height: 1.5; color: #c9b896; }
+  #spotlight .actions { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: 1.1rem; }
+  #spotlight button { font: inherit; color: #e8dcc2; background: #241b12; border: 1px solid #6b5a3a;
+    border-radius: 999px; min-height: 44px; padding: .55rem 1rem; cursor: pointer; }
+  #spotlight button:focus-visible { outline: 2px solid #f2d79b; outline-offset: 3px; }
+  #spotlight .step { margin-top: .7rem; font-size: .85rem; color: #f2d79b; }
 
 /* Tap a picture on the wall to open it here: full-screen, with the same
    actions the gallery offers. The wall keeps breathing behind it, but the
@@ -192,8 +204,22 @@
     <p id="emptyMsg">No pictures have reached the wall yet.</p>
     <p class="live" id="emptyLive"></p>
     <div class="acts">
-      <a class="primary" href="/start">Show me how</a>
+      <a class="primary" href="/start">Add photos</a>
+      <a href="/" id="openSky">Open the sky</a>
       <a href="/menu">Menu</a>
+    </div>
+  </div>
+</section>
+<section id="spotlight" role="dialog" aria-modal="true" aria-labelledby="spotlightTitle">
+  <div class="card">
+    <h2 id="spotlightTitle"></h2>
+    <p id="spotlightCopy"></p>
+    <p class="step" id="spotlightStep"></p>
+    <p class="step" id="spotlightEscape" hidden>Press Esc to close this tour.</p>
+    <div class="actions">
+      <button type="button" id="spotlightNext">Next</button>
+      <button type="button" id="spotlightSkip">Skip tour</button>
+      <button type="button" id="spotlightClose">Close</button>
     </div>
   </div>
 </section>
@@ -549,6 +575,48 @@ function retireCurrent() {
 document.getElementById("wlbClose").addEventListener("click", closeLightbox);
 wlb.addEventListener("click", (ev) => { if (ev.target === wlb) closeLightbox(); });
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeLightbox(); });
+
+/* First visit only: this is an in-place tour, not installer setup. Dismissal
+   lives in this browser's local storage and never causes a server request. */
+const spotlight = document.getElementById("spotlight");
+const spotlightTitle = document.getElementById("spotlightTitle");
+const spotlightCopy = document.getElementById("spotlightCopy");
+const spotlightStep = document.getElementById("spotlightStep");
+const tour = [
+  ["Find your way", "Use Menu for Photos, Edit, Settings guidance, Help, and Logs. The links stay on this installed Constellation server."],
+  ["Add photos", "If the wall is empty, choose Add photos for setup guidance, or Open the sky to return to the constellation."],
+  ["Close or check logs", "Close this tour any time. Logs opens the existing local debug panel; no analytics or telemetry are added."]
+];
+let tourIndex = 0;
+function finishTour() {
+  try { localStorage.setItem("constellation.wall.spotlight.dismissed", "1"); } catch (e) { /* storage may be disabled */ }
+  spotlight.classList.remove("on");
+}
+function showTourStep() {
+  const [title, copy] = tour[tourIndex];
+  spotlightTitle.textContent = title;
+  spotlightCopy.textContent = copy;
+  spotlightStep.textContent = `Step ${tourIndex + 1} of ${tour.length}`;
+  document.getElementById("spotlightEscape").hidden = tour.length <= 1;
+  const next = document.getElementById("spotlightNext");
+  next.textContent = tourIndex === tour.length - 1 ? "Finish" : "Next";
+}
+document.getElementById("spotlightNext").addEventListener("click", () => {
+  if (tourIndex === tour.length - 1) finishTour();
+  else { tourIndex++; showTourStep(); }
+});
+document.getElementById("spotlightSkip").addEventListener("click", finishTour);
+document.getElementById("spotlightClose").addEventListener("click", finishTour);
+addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && spotlight.classList.contains("on")) finishTour();
+});
+try {
+  if (localStorage.getItem("constellation.wall.spotlight.dismissed") !== "1") {
+    showTourStep();
+    spotlight.classList.add("on");
+    document.getElementById("spotlightNext").focus();
+  }
+} catch (e) { /* keep the wall usable if local storage is unavailable */ }
 
 document.getElementById("wlbRemove").addEventListener("click", async () => {
   if (!wlbSlot || !wlbSlot.cur) return;

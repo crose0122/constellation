@@ -32,6 +32,15 @@
   a.card.start { border-color: #2f6f9e; background: #0c1a2a; }
   a.card:focus-visible { outline: 2px solid #49c6ff; outline-offset: 3px; }
   footer { text-align: center; color: #40566a; font-size: 0.72rem; margin-top: 2.4rem; }
+  .quick-links { position: absolute; top: 1rem; right: 1.2rem; max-width: 46vw;
+    display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .55rem; margin: 0; }
+  .quick-links a { color: #dfeefa; background: #0a1420; border: 1px solid #1c3e60;
+    border-radius: 999px; padding: .55rem .95rem; min-height: 44px; display: inline-flex;
+    align-items: center; text-decoration: none; }
+  .quick-links a:hover, .quick-links a:focus-visible { border-color: #49c6ff; outline: 2px solid #49c6ff; outline-offset: 2px; }
+  @media (min-width: 901px) { header { margin-top: 6rem; } }
+  @media (max-width: 900px) { .quick-links { position: static; max-width: none;
+    justify-content: center; margin: 0 auto 1rem; } }
 </style>
 </head>
 <body>
@@ -39,6 +48,14 @@
   <h1>🌌 Constellation</h1>
   <div class="tag">our life in images</div>
 </header>
+
+<nav class="quick-links" aria-label="Quick links">
+  <a href="/gallery">Photos</a>
+  <a href="/curation">Edit</a>
+  <a href="/start">Settings</a>
+  <a href="/start">Help</a>
+  <a href="#logs" id="logs-link" onclick="event.preventDefault(); window.dispatchEvent(new Event('constellation:toggle-debug'))">Logs</a>
+</nav>
 
 <h2>Start here</h2>
 <div class="grid">

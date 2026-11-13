@@ -101,6 +101,8 @@ The app is called **Constellation**. Surfaces now live on its server (formerly "
 | `/progress` | pipeline dashboard, including a video section |
 | `/people`, `/curation` | face management and the triage queue |
 
+**First-run wall funnel (in-place):** `/wall` presents a dismissible three-step spotlight once per browser, saved locally; it never restarts installation. The existing menu exposes Photos, Edit, Settings guidance, Help, and the local Debug Console. An empty wall links to photo-setup guidance and back to `/` on the current installed server. No telemetry or external requests are added.
+
 **Kiosk full loop:** constellation 1 min → slideshow 5 min →
 constellation 1 min → wall 5 min → repeat. Implemented across separate pages by
 handing off through a `kioskNext` flag in `localStorage`.
