@@ -633,6 +633,24 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/vault/folders":
             self._json({"folders": list(config.VAULT_FOLDERS)})
             return
+        if url.path == "/api/setup/where":
+            # "where do my photos live?" for the getting-started page. Paths
+            # only (PIN-gated); answered before the DB opens so a fresh
+            # install with no library yet still gets an answer.
+            from .. import vault as vaultmod
+            try:
+                vault_open = bool(vaultmod.is_mounted())
+            except Exception:  # noqa: BLE001 — a probe, never a crash
+                vault_open = False
+            self._json({
+                "library": str(config.LIBRARY_ROOT),
+                "originals": str(config.LIBRARY_ROOT / "originals"),
+                "vault": str(config.VAULT_MOUNT),
+                "vault_mode": config.VAULT_MODE,
+                "vault_open": vault_open,
+                "vault_folders": list(config.VAULT_FOLDERS),
+            })
+            return
         if url.path == "/api/auth/status":
             self._json({"pin_set": auth.pin_configured(),
                         "signed_in": self._session() is not None,
@@ -710,6 +728,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, page, "text/html")
             elif url.path in ("/menu", "/home"):
                 page = (STATIC_DIR / "menu.html").read_bytes()
+                self._send(200, page, "text/html")
+            elif url.path == "/start":
+                page = (STATIC_DIR / "start.html").read_bytes()
                 self._send(200, page, "text/html")
             elif url.path == "/api/people":
                 rows = conn.execute(

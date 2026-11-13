@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Constellation — getting started</title>
+<link rel="icon" href="/static/icon-192.png">
+<!-- Getting started. Open surface: it explains, it never shows a
+     private path. Exact folders come from /api/setup/where, which is behind
+     the family PIN, and only after the adult signs in. Same look as /menu. -->
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    min-height: 100%; background:
+      radial-gradient(ellipse at 50% 0%, #0a1830 0%, #010409 60%);
+    color: #dfeefa; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem 1.2rem 3rem; max-width: 760px; margin: 0 auto; line-height: 1.5;
+  }
+  header { text-align: center; margin-bottom: 1.6rem; }
+  h1 { font-size: 1.6rem; font-weight: 650; }
+  .tag { color: #8aa6bd; font-size: 0.95rem; margin-top: 0.3rem; }
+  ol.steps { list-style: none; padding: 0; display: grid; gap: 1rem; counter-reset: s; }
+  ol.steps > li {
+    counter-increment: s; position: relative;
+    background: #0a1420; border: 1px solid #1c3e60; border-radius: 14px;
+    padding: 1.1rem 1.2rem 1.1rem 3.4rem;
+  }
+  ol.steps > li::before {
+    content: counter(s); position: absolute; left: 1rem; top: 1.05rem;
+    width: 1.7rem; height: 1.7rem; border-radius: 50%; display: grid; place-items: center;
+    background: #123456; color: #bfe4ff; font-weight: 700; font-size: 0.9rem;
+  }
+  ol.steps > li.done::before { content: "✓"; background: #134e2a; color: #bbf7d0; }
+  h2 { font-size: 1.05rem; font-weight: 650; margin-bottom: 0.35rem; }
+  p, li li { color: #b4cadb; font-size: 0.95rem; }
+  p + p { margin-top: 0.5rem; }
+  ul.plain { margin: 0.4rem 0 0 1.1rem; }
+  code, .path {
+    font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; font-size: 0.85rem;
+    background: #06101a; border: 1px solid #1c3e60; border-radius: 6px; padding: 0.1rem 0.4rem;
+    color: #dfeefa; word-break: break-all;
+  }
+  .where { margin-top: 0.6rem; display: grid; gap: 0.35rem; }
+  .where div { font-size: 0.9rem; color: #b4cadb; }
+  .bar { height: 10px; border-radius: 999px; background: #0d2236; overflow: hidden; margin: 0.6rem 0 0.3rem; }
+  .bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #2b8fd6, #49c6ff); transition: width .8s ease; }
+  .live { font-variant-numeric: tabular-nums; color: #dfeefa; }
+  .acts { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
+  a.btn, button.btn {
+    font: inherit; font-size: 0.92rem; cursor: pointer; text-decoration: none;
+    display: inline-flex; align-items: center; min-height: 44px; padding: 0.5rem 1.1rem;
+    border-radius: 999px; background: #10243a; color: #bfe4ff; border: 1px solid #23507a;
+  }
+  a.btn.primary { background: #49c6ff; color: #04121f; border-color: #49c6ff; font-weight: 650; }
+  a.btn:focus-visible, button.btn:focus-visible { outline: 2px solid #9be1ff; outline-offset: 3px; }
+  footer { text-align: center; color: #5f7d95; font-size: 0.8rem; margin-top: 2rem; }
+  @media (prefers-reduced-motion: reduce) { .bar > i { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧭 Getting started</h1>
+  <div class="tag">Three things to know. Takes a minute.</div>
+</header>
+
+<main>
+<ol class="steps">
+  <li id="stepWhere">
+    <h2>Where your photos live</h2>
+    <p>Your <b>originals stay exactly where they were</b> — on the drive, laptop or
+      phone you picked. Constellation reads them and keeps its own copy in a
+      library folder on <b>this computer</b>; that copy is what the wall, the star
+      map and the gallery show.</p>
+    <p>The <b>Personal Vault</b> is a separate, locked folder for pictures that
+      shouldn't hang on a shared wall. Pictures the safety check flags go there
+      for an adult to review, and you can move any picture there yourself with
+      “Move to Personal Vault”.</p>
+    <div class="where" id="where" aria-live="polite">
+      <div>Sign in with the family PIN to see the exact folders on this computer.</div>
+    </div>
+    <div class="acts" id="whereActs">
+      <a class="btn" id="signIn" href="/login?next=/start">Sign in to show folders</a>
+    </div>
+  </li>
+
+  <li id="stepSweep">
+    <h2>The first sweep</h2>
+    <p>Right after setup, Constellation reads your <b>newest ~2,000 photos first</b>
+      so the wall comes alive within minutes; older years fill in overnight. You
+      don't need to keep this page open.</p>
+    <div class="bar" role="progressbar" aria-label="first sweep" aria-valuemin="0" aria-valuemax="100" id="bar"><i></i></div>
+    <p class="live" id="sweep" aria-live="polite">Checking…</p>
+    <div class="acts">
+      <a class="btn" href="/progress">See detailed progress</a>
+    </div>
+  </li>
+
+  <li id="stepNext">
+    <h2>Where to go next</h2>
+    <ul class="plain">
+      <li><b>The Wall</b> — the picture-frame view for a TV or spare screen.</li>
+      <li><b>Constellation</b> — the star map; tap a star to explore.</li>
+      <li><b>Gallery</b> — find any photo by person, place or words.</li>
+    </ul>
+    <p>Lost? Move the mouse or touch the screen on any wall and a
+      <b>☰ Menu</b> button appears in the bottom-right corner.</p>
+    <p>To add another folder or drive later, open the <b>Constellation Setup</b>
+      app on this computer and choose it there.</p>
+    <div class="acts">
+      <a class="btn primary" href="/wall">Open the Wall</a>
+      <a class="btn" href="/">Star map</a>
+      <a class="btn" href="/menu">Menu</a>
+    </div>
+  </li>
+</ol>
+</main>
+
+<footer>Self-hosted · LAN-only · nothing leaves your network</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const n = (x) => Number(x || 0).toLocaleString();
+
+// textContent only: paths are data, never markup
+function row(label, value) {
+  const d = document.createElement("div");
+  d.append(label + " ");
+  const c = document.createElement("span");
+  c.className = "path"; c.textContent = value;
+  d.append(c);
+  return d;
+}
+
+async function loadWhere() {
+  let r;
+  try { r = await fetch("/api/setup/where", { headers: { Accept: "application/json" } }); }
+  catch (e) { return; }
+  if (!r.ok) return;                       // not signed in: keep the explainer
+  const w = await r.json();
+  const box = $("where");
+  box.textContent = "";
+  box.append(row("Library (Constellation's copy):", w.library));
+  box.append(row("Personal Vault:", w.vault));
+  const st = document.createElement("div");
+  st.textContent = w.vault_open
+    ? "The vault is open right now."
+    : "The vault is locked right now — that's normal; it opens when an adult unlocks it.";
+  box.append(st);
+  $("whereActs").hidden = true;
+  $("stepWhere").classList.add("done");
+}
+
+async function loadSweep() {
+  let p = null;
+  try { p = await (await fetch("/api/progress")).json(); } catch (e) { p = null; }
+  const out = $("sweep"), bar = $("bar");
+  if (!p) { out.textContent = "Couldn't reach the server — is Constellation running?"; return; }
+  const total = Math.max(p.discovered || 0, p.ingested || 0);
+  const ready = p.screen_done || 0;
+  const pct = total ? Math.min(100, Math.round((ready / total) * 100)) : 0;
+  bar.firstElementChild.style.width = pct + "%";
+  bar.setAttribute("aria-valuenow", String(pct));
+  if (!total && !p.active_stage) {
+    out.textContent = "No photos found yet. Open the Constellation Setup app on this "
+      + "computer and choose where your photos are.";
+  } else if (ready && ready >= total && !p.active_stage) {
+    out.textContent = `All caught up — ${n(ready)} photos ready.`;
+    $("stepSweep").classList.add("done");
+  } else {
+    out.textContent = `Reading your photos… ${n(ready)} of ${n(total)} ready`
+      + (ready ? " — the first ones are ready to view." : ".");
+  }
+}
+
+loadWhere();
+loadSweep();
+setInterval(loadSweep, 15000);
+</script>
+</body>
+</html>

@@ -36,7 +36,7 @@ OPEN, PIN, PIN_WRITE = "open", "pin", "pin_write"
 ROUTES: dict[str, str] = {
     # display surfaces — open
     "/": OPEN, "/ambient": OPEN, "/memories": OPEN, "/wall": OPEN,
-    "/menu": OPEN, "/home": OPEN, "/gallery": OPEN, "/node": OPEN,
+    "/menu": OPEN, "/home": OPEN, "/start": OPEN, "/gallery": OPEN, "/node": OPEN,
     "/progress": OPEN, "/manifest.json": OPEN, "/favicon.ico": OPEN, "/sw.js": OPEN,
     "/login": OPEN, "/api/dbg": OPEN, "/ca.pem": OPEN,
     "/api/progress": OPEN, "/api/categories": OPEN, "/api/index": OPEN,
@@ -48,6 +48,9 @@ ROUTES: dict[str, str] = {
     "/people": PIN, "/person": PIN, "/curation": PIN,
     "/api/people": PIN, "/api/person": PIN, "/api/curation": PIN,
     "/api/purged": PIN, "/api/vaulted": PIN, "/api/vault/folders": PIN,
+    # exact folders on this computer (library, Personal Vault) — the getting-
+    # started page shows them after sign-in; never on the open wall
+    "/api/setup/where": PIN,
     # Debug Console state (log tail + status checks) — operator data, never open
     "/api/debug/state": PIN,
     # anything that changes the library — PIN + CSRF
