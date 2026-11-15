@@ -393,6 +393,18 @@ class SetupWhereVaultStateTest(_Base):
         self.assertLessEqual(p["viewable"], p["screen_done"] - p["vaulted"] - p["review"])
 
 
+class WayOutEverywhereTest(unittest.TestCase):
+    """Every page a person can land on has a way back to the menu."""
+
+    def test_every_static_page_links_the_menu(self):
+        static = Path(srv.__file__).parent / "static"
+        exempt = {"menu.html", "login.html"}   # the menu itself; pre-sign-in
+        missing = sorted(f.name for f in static.glob("*.html")
+                         if f.name not in exempt
+                         and 'href="/menu"' not in f.read_text(encoding="utf-8"))
+        self.assertEqual(missing, [], f"pages with no way back to /menu: {missing}")
+
+
 class ShareTest(_Base):
     def test_share_off_by_default_even_signed_in(self):
         _, jar = self.login()
