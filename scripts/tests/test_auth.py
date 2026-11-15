@@ -26,7 +26,7 @@ from memoryvault import config, db  # noqa: E402
 from memoryvault.constellation import auth  # noqa: E402
 from memoryvault.constellation import server as srv  # noqa: E402
 
-SERVER_SRC = Path(srv.__file__).read_text()
+SERVER_SRC = Path(srv.__file__).read_text(encoding="utf-8")
 PIN = "4827"
 TLS = {"X-Forwarded-Proto": "https"}
 
@@ -39,6 +39,7 @@ def _served_paths() -> set[str]:
         exact |= set(re.findall(r'"([^"]+)"', grp))
     exact |= set(re.findall(r'path == "([^"]+)"', SERVER_SRC))
     prefixes = set(re.findall(r'url\.path\.startswith\("([^"]+)"\)', SERVER_SRC))
+    exact |= set(srv.PAGES)  # page shells are served from this table (task #388)
     return exact | {p + "x" for p in prefixes}
 
 
