@@ -627,9 +627,30 @@ async function updateEmpty() {
       + "\"Show me how\" walks you through it.";
     live.textContent = "";
   } else {
-    msg.textContent = "The first sweep is reading your newest photos. "
-      + "Pictures appear here as soon as they're checked — no need to stay.";
-    live.textContent = `Found ${n(p.discovered)} · read ${n(p.ingested)} · ready ${n(p.screen_done)}`;
+    // screen_done counts every photo the safety check finished, including the
+    // ones it sent to the Personal Vault or to adult review. Only `viewable`
+    // can reach a wall — same split as /start — so "ready" must use that, and
+    // a finished sweep with nothing viewable must say so instead of asking the
+    // family to wait for pictures that will never come.
+    const total = Math.max(p.discovered || 0, p.ingested || 0);
+    const checked = p.screen_done || 0;
+    const held = (p.vaulted || 0) + (p.review || 0);
+    const ready = p.viewable ?? Math.max(0, checked - held);
+    const finished = checked && checked >= total && !p.active_stage;
+    if (finished && !ready) {
+      msg.textContent = "Constellation finished checking your photos, but none of them "
+        + "can be shown on the wall. "
+        + (held ? `${n(p.vaulted)} went to the Personal Vault and ${n(p.review)} are `
+          + "waiting for an adult to review — photos in either place don't show here. " : "")
+        + "Add more photos and they'll appear once they're checked.";
+    } else if (finished) {
+      msg.textContent = "Your photos are checked — the first ones will join the wall "
+        + "within a minute.";
+    } else {
+      msg.textContent = "The first sweep is reading your newest photos. "
+        + "Pictures appear here as soon as they're checked — no need to stay.";
+    }
+    live.textContent = `Found ${n(p.discovered)} · checked ${n(checked)} · ready to view ${n(ready)}`;
   }
 }
 
