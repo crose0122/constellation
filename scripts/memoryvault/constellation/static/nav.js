@@ -54,7 +54,10 @@
       back.addEventListener("click", function () { history.back(); });
       bar.appendChild(back);
     }
-    if (!onMenu) {
+    // a page that already shows its own Menu link (index, or the chips from
+    // PR #15) keeps it; never two Menu buttons on one screen
+    var ownMenu = document.querySelector('a[href="/menu"]:not(#cst-nav-menu)');
+    if (!onMenu && !ownMenu) {
       var menu = document.createElement("a");
       menu.id = "cst-nav-menu";
       menu.href = "/menu";
