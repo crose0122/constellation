@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS tags (
   value TEXT NOT NULL,
   confidence REAL,
   model_version TEXT NOT NULL,
+  -- 'machine' (default) = model-derived; 'human' = curator override.
+  -- Human rows are never replaced by store_tags (see scripts/memoryvault/tag.py).
+  source TEXT NOT NULL DEFAULT 'machine',
   PRIMARY KEY (photo_id, dimension, value)
 );
 
@@ -194,6 +197,13 @@ def init(db_path: Path) -> sqlite3.Connection:
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e):
                     raise           # a real error (e.g. locked) — let retry see it
+        # task-379: tags need a provenance stamp so the machine re-tagger
+        # can't overwrite a curator's choice. Additive migration, idempotent.
+        try:
+            conn.execute("ALTER TABLE tags ADD COLUMN source TEXT NOT NULL DEFAULT 'machine'")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e):
+                raise
         conn.execute(
             "INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('version', ?)",
             (SCHEMA_VERSION,),

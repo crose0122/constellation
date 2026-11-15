@@ -106,12 +106,16 @@ def store_tags(conn, photo_id: int, raw: dict, schema: dict, taken_at: str | Non
         # is unique to this stage, so faces-1.0, geocode-1.0, rollup-1.0 and
         # curation rows survive a re-tag untouched
         conn.execute(
-            "DELETE FROM tags WHERE photo_id = ? AND model_version LIKE '%@schema-%'",
+            "DELETE FROM tags WHERE photo_id = ? AND model_version LIKE '%@schema-%' "
+            "AND source = 'machine'",
             (photo_id,),
         )
     dims = vision_dims(schema)
     for key, dim in dims.items():
         if key not in raw or not raw[key]:
+            continue
+        if has_human_tags(conn, photo_id, key):
+            # curator already corrected this dimension — leave it alone
             continue
         values = raw[key] if isinstance(raw[key], list) else [raw[key]]
         canon = {v.lower(): v for v in dim["values"]}
@@ -215,3 +219,93 @@ def tag(conn, vision_fn=call_vision, limit: int | None = None,
 
     finish_run(conn, run, stats)
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Task #379: human (curator) tags. Machine re-tags never overwrite these.
+# ---------------------------------------------------------------------------
+
+HUMAN_MODEL_VERSION = "human@manual-1"
+
+
+def has_human_tags(conn, photo_id: int, dimension: str | None = None) -> bool:
+    """Whether a person has already corrected the photo (optionally for one
+    dimension). Machine code consults this to stand down."""
+    if dimension is None:
+        cur = conn.execute(
+            "SELECT 1 FROM tags WHERE photo_id = ? AND source = 'human' LIMIT 1",
+            (photo_id,),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT 1 FROM tags WHERE photo_id = ? AND dimension = ? "
+            "AND source = 'human' LIMIT 1",
+            (photo_id, dimension),
+        )
+    return cur.fetchone() is not None
+
+
+def store_human_tags(conn, photo_id: int, tags: dict, *,
+                     author: str | None = None, replace: bool = True,
+                     method: str = "click-to-tag") -> list[tuple[str, str]]:
+    """Persist curator corrections.
+
+    *tags* is a mapping ``{dimension: value_or_list}``. Every written row
+    carries ``source='human'`` and ``model_version='human@manual-1'``, so a
+    subsequent machine re-tag (store_tags) leaves it untouched. Returns the
+    (dimension, value) pairs actually stored.
+    """
+    mv = f"{HUMAN_MODEL_VERSION}"
+    # opportunistic author tag encoded into model_version keeps the schema
+    # (TEXT free-form) and is visible in provenance queries.
+    if replace:
+        if isinstance(tags, dict) and tags:
+            dims = tuple(str(d) for d in tags)
+            placeholders = ",".join("?" for _ in dims)
+            conn.execute(
+                f"DELETE FROM tags WHERE photo_id = ? AND source = 'human' "
+                f"AND dimension IN ({placeholders})",
+                (photo_id, *dims),
+            )
+    stored: list[tuple[str, str]] = []
+    if not isinstance(tags, dict):
+        return stored
+    for key, raw in tags.items():
+        dim = str(key).strip()
+        if not dim:
+            continue
+        vals = raw if isinstance(raw, (list, tuple)) else [raw]
+        for v in vals:
+            value = str(v).strip()
+            if not value:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO tags"
+                "(photo_id, dimension, value, confidence, model_version, source) "
+                "VALUES (?,?,?,?,?,?)",
+                (photo_id, dim, value, 1.0, mv, "human"),
+            )
+            stored.append((dim, value))
+    conn.commit()
+    return stored
+
+
+def human_tag_manifest(conn, photo_id: int | None = None) -> list[dict]:
+    """JSON-serialisable manifest of every human correction in the library
+    (or one photo). Intended for the click-to-tag gallery and for the
+    audit ledger declared in task #379."""
+    sql = (
+        "SELECT photo_id, dimension, value, model_version, source "
+        "FROM tags WHERE source = 'human' "
+    )
+    params: tuple = ()
+    if photo_id is not None:
+        sql += "AND photo_id = ? "
+        params = (photo_id,)
+    sql += "ORDER BY photo_id, dimension, value"
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        {"photo_id": r[0], "dimension": r[1], "value": r[2],
+         "model_version": r[3], "source": r[4]}
+        for r in rows
+    ]
