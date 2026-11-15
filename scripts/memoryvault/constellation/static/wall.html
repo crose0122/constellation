@@ -614,10 +614,15 @@ async function updateEmpty() {
   const empty = !pool.length;
   emptyEl.classList.toggle("on", empty);
   if (!empty) return;
+  const title = document.getElementById("emptyTitle");
   const msg = document.getElementById("emptyMsg");
   const live = document.getElementById("emptyLive");
   let p = null;
   try { p = await (await fetch("/api/progress")).json(); } catch (e) { p = null; }
+  // every state but "finished, nothing viewable" keeps the page's own title;
+  // set it each refresh (after the fetch, so it never flickers while waiting)
+  // so the headline changes back when the state does
+  title.textContent = "Your wall is ready for photos";
   const n = (x) => Number(x || 0).toLocaleString();
   if (!p) {
     msg.textContent = "No pictures have reached the wall yet.";
@@ -639,6 +644,7 @@ async function updateEmpty() {
     const ready = p.viewable ?? Math.max(0, checked - held - (p.trash || 0));
     const finished = checked && checked >= total && !p.active_stage;
     if (finished && !ready) {
+      title.textContent = "Checking complete — no photos ready to display";
       msg.textContent = "Constellation finished checking your photos, but none of them "
         + "are ready to view on the wall. "
         + (held ? `${n(p.vaulted)} went to the Personal Vault and ${n(p.review)} `
