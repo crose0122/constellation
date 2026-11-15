@@ -10,6 +10,7 @@ Endpoints:
 """
 
 import hmac
+import html
 import json
 import random
 import sqlite3
@@ -297,6 +298,9 @@ class ConstellationDB:
             "discovered": discovered,
             "ingested": ingested,
             "screen_done": screened + vaulted + review,
+            # what can actually appear on a wall: screened, still in the
+            # library, not curated to Trash (vaulted/review never count)
+            "viewable": retag_total,
             "screen_total": ingested,
             "tag_done": tagged,
             "tag_total": max(0, ingested - trash),
@@ -393,6 +397,57 @@ class ConstellationDB:
 
 
 DEBUG_TAG = b'<script src="/static/debug.js" defer></script>'
+NAV_TAG = b'<script src="/static/nav.js" defer></script>'
+
+# Every HTML page the server answers, and the file behind it. Served before
+# the DB is opened (see do_GET) so no page can 500/503 on library state.
+PAGES: dict[str, str] = {
+    "/": "index.html", "/ambient": "index.html", "/memories": "index.html",
+    "/menu": "menu.html", "/home": "menu.html", "/start": "start.html",
+    "/wall": "wall.html",
+    "/gallery": "gallery.html", "/people": "people.html",
+    "/person": "person.html", "/node": "node.html",
+    "/curation": "curation.html", "/progress": "progress.html",
+}
+
+
+def page_bytes(path: str) -> bytes:
+    """The page shell for `path`, read as UTF-8 bytes.
+
+    Never Path.read_text() without an encoding: on Windows that decodes with
+    the ANSI code page (cp1252), and index.html's UTF-8 bytes (0x90 in an
+    emoji) made `/` answer 500 on every Windows install (task #388)."""
+    page = (STATIC_DIR / PAGES[path]).read_bytes()
+    if PAGES[path] == "index.html":
+        # stamp asset URLs with their mtime: a reloaded page always
+        # references the current JS/CSS, defeating mobile Chrome's
+        # heuristic subresource cache (stale constellation.js bit us twice)
+        for asset in ("constellation.css", "constellation.js"):
+            v = int((STATIC_DIR / asset).stat().st_mtime)
+            page = page.replace(f"/static/{asset}".encode(),
+                                f"/static/{asset}?v={v}".encode())
+    return page
+
+
+DENY_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} \u2014 Constellation</title>
+<style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;
+color:#e2e8f0;font:16px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif}}
+main{{max-width:34rem;padding:2rem}}h1{{font-size:1.4rem;color:#fbbf24}}
+a{{color:#93c5fd}}</style></head>
+<body><main><h1>{title}</h1><p>{text}</p>
+<p><a href="/">Home</a> \u00b7 <a href="/menu">Menu</a></p></main></body></html>
+"""
+
+
+def _with_nav(page: bytes) -> bytes:
+    """Inject the global way-home control (static/nav.js) into every HTML
+    page, so no surface (curation, progress, a deep link) traps a person."""
+    if NAV_TAG in page or b"</body>" not in page:
+        return page
+    return page.replace(b"</body>", NAV_TAG + b"\n</body>", 1)
 
 
 def _with_debug_console(page: bytes) -> bytes:
@@ -422,7 +477,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, code: int, body: bytes, ctype: str):
         if ctype == "text/html" and code == 200:
-            body = _with_debug_console(body)
+            body = _with_debug_console(_with_nav(body))
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -476,6 +531,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _wants_page(self, path: str) -> bool:
+        return (self.command == "GET" and path in PAGES
+                and "text/html" in (self.headers.get("Accept") or ""))
+
+    def _deny_page(self, code: int, title: str, text: str):
+        """A denial a person can read, with a way home — never raw JSON in a
+        browser tab. Text is fixed server copy, escaped anyway."""
+        body = DENY_PAGE.format(title=html.escape(title), text=html.escape(text)).encode()
+        body = _with_nav(body)
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _gate(self, path: str) -> bool:
         """True = go ahead. Otherwise the response has been sent."""
         cls = auth.classify(path)
@@ -492,10 +563,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return False
+            if self._wants_page(path):
+                self._deny_page(403, "This page needs the secure address",
+                                "Private pages only open over https://, so the family PIN "
+                                "never travels unencrypted. Open Constellation's https:// "
+                                "address on this device, or ask the adult who set it up to "
+                                "install the family certificate from this address: /ca.pem.")
+                return False
             self._deny(403, "https required", https=target,
                        hint="open the https:// address; the PIN never travels unencrypted")
             return False
         if not auth.pin_configured():
+            if self._wants_page(path):
+                self._deny_page(503, "The family PIN isn't set yet",
+                                "An adult needs to finish setup (mvault pin set) before "
+                                "private pages can open.")
+                return False
             self._deny(503, "family PIN not set", hint="run: mvault pin set")
             return False
         sess = self._session()
@@ -633,6 +716,29 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/vault/folders":
             self._json({"folders": list(config.VAULT_FOLDERS)})
             return
+        if url.path == "/api/setup/where":
+            # "where do my photos live?" for the getting-started page. Paths
+            # only (PIN-gated); answered before the DB opens so a fresh
+            # install with no library yet still gets an answer.
+            # Observational only: vault.state() never creates folders
+            # (is_mounted() does in dir mode, so it must not be used here).
+            from .. import vault as vaultmod
+            try:
+                vs = vaultmod.state()
+            except Exception:  # noqa: BLE001 — a probe, never a crash
+                vs = {"mode": config.VAULT_MODE, "available": False,
+                      "encrypted": False, "state": "unknown"}
+            self._json({
+                "library": str(config.LIBRARY_ROOT),
+                "originals": str(config.LIBRARY_ROOT / "originals"),
+                "vault": str(config.VAULT_MOUNT),
+                "vault_mode": vs["mode"],
+                "vault_open": bool(vs["available"]),
+                "vault_encrypted": bool(vs["encrypted"]),
+                "vault_state": vs["state"],
+                "vault_folders": list(config.VAULT_FOLDERS),
+            })
+            return
         if url.path == "/api/auth/status":
             self._json({"pin_set": auth.pin_configured(),
                         "signed_in": self._session() is not None,
@@ -658,6 +764,23 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/photo/share" and not auth.share_enabled():
             self._deny(404, "sharing is off", hint="an adult can enable it in settings")
             return
+        if url.path.startswith("/static/"):
+            # page assets, like the shells below, never need the library
+            f = STATIC_DIR / Path(url.path).name
+            if f.is_file():
+                ctype = ("text/css" if f.suffix == ".css" else
+                         "image/png" if f.suffix == ".png" else
+                         "application/javascript")
+                self._send(200, f.read_bytes(), ctype)
+            else:
+                self._send(404, b"not found", "text/plain")
+            return
+        if url.path in PAGES:
+            # Page shells never touch the DB: a missing/empty/locked library
+            # must still give a human a page with a way home, and each page's
+            # own API calls report "db unavailable" in place (task #388).
+            self._send(200, page_bytes(url.path), "text/html")
+            return
         try:
             conn = self.condb.conn()
         except sqlite3.OperationalError as e:
@@ -666,16 +789,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, b'{"error": "db unavailable"}', "application/json")
             return
         try:
-            if url.path in ("/", "/ambient", "/memories"):
-                page = (STATIC_DIR / "index.html").read_text()
-                # stamp asset URLs with their mtime: a reloaded page always
-                # references the current JS/CSS, defeating mobile Chrome's
-                # heuristic subresource cache (stale constellation.js bit us twice)
-                for asset in ("constellation.css", "constellation.js"):
-                    v = int((STATIC_DIR / asset).stat().st_mtime)
-                    page = page.replace(f"/static/{asset}", f"/static/{asset}?v={v}")
-                self._send(200, page.encode(), "text/html")
-            elif url.path == "/manifest.json":
+            if url.path == "/manifest.json":
                 self._send(200, (STATIC_DIR / "manifest.json").read_bytes(),
                            "application/manifest+json")
             elif url.path == "/favicon.ico":
@@ -688,29 +802,11 @@ class Handler(BaseHTTPRequestHandler):
                 # served from the root so the service worker scope covers "/"
                 self._send(200, (STATIC_DIR / "sw.js").read_bytes(),
                            "application/javascript")
-            elif url.path.startswith("/static/"):
-                f = STATIC_DIR / Path(url.path).name
-                if f.exists():
-                    ctype = ("text/css" if f.suffix == ".css" else
-                             "image/png" if f.suffix == ".png" else
-                             "application/javascript")
-                    self._send(200, f.read_bytes(), ctype)
-                else:
-                    self._send(404, b"not found", "text/plain")
             elif url.path == "/api/dbg":
                 ua = self.headers.get("User-Agent", "?")
                 with open("/tmp/constellation-dbg.log", "a") as fh:
                     fh.write(f"{url.query} UA={ua}\n")
                 self._send(204, b"", "text/plain")
-            elif url.path == "/people":
-                page = (STATIC_DIR / "people.html").read_bytes()
-                self._send(200, page, "text/html")
-            elif url.path == "/wall":
-                page = (STATIC_DIR / "wall.html").read_bytes()
-                self._send(200, page, "text/html")
-            elif url.path in ("/menu", "/home"):
-                page = (STATIC_DIR / "menu.html").read_bytes()
-                self._send(200, page, "text/html")
             elif url.path == "/api/people":
                 rows = conn.execute(
                     "SELECT c.id, c.label, COUNT(f.id) n, "
@@ -723,9 +819,6 @@ class Handler(BaseHTTPRequestHandler):
                     {"id": r["id"], "label": r["label"], "count": r["n"],
                      "face": f"/face/{r['fid']}.jpg" if r["fid"] else None}
                     for r in rows]})
-            elif url.path == "/person":
-                page = (STATIC_DIR / "person.html").read_bytes()
-                self._send(200, page, "text/html")
             elif url.path == "/api/person":
                 # every face crop currently driving this name's people tag
                 label = q.get("label", [""])[0].strip()
@@ -820,9 +913,6 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(label_cluster(wconn, cid, label))
                 finally:
                     wconn.close()
-            elif url.path == "/gallery":
-                page = (STATIC_DIR / "gallery.html").read_bytes()
-                self._send(200, page, "text/html")
             elif url.path == "/api/gallery":
                 off = int(q.get("offset", [0])[0])
                 lim = min(200, int(q.get("limit", [120])[0]))
@@ -881,12 +971,6 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone()["c"]
                 self._json({"total": total, "offset": off,
                             "photos": [_node(r) for r in rows]})
-            elif url.path == "/node":
-                page = (STATIC_DIR / "node.html").read_bytes()
-                self._send(200, page, "text/html")
-            elif url.path == "/curation":
-                page = (STATIC_DIR / "curation.html").read_bytes()
-                self._send(200, page, "text/html")
             elif url.path == "/api/purge":
                 # PERMANENT deletion of everything in a bin. Requires the
                 # typed confirmation to have reached the client first.
@@ -1188,9 +1272,6 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     wconn.close()
                 self._json({"restored": pid})
-            elif url.path == "/progress":
-                page = (STATIC_DIR / "progress.html").read_bytes()
-                self._send(200, page, "text/html")
             elif url.path == "/api/progress":
                 self._json(self.condb.progress(conn))
             elif url.path == "/api/categories":

@@ -26,7 +26,7 @@ from memoryvault import config, db  # noqa: E402
 from memoryvault.constellation import auth  # noqa: E402
 from memoryvault.constellation import server as srv  # noqa: E402
 
-SERVER_SRC = Path(srv.__file__).read_text()
+SERVER_SRC = Path(srv.__file__).read_text(encoding="utf-8")
 PIN = "4827"
 TLS = {"X-Forwarded-Proto": "https"}
 
@@ -39,6 +39,7 @@ def _served_paths() -> set[str]:
         exact |= set(re.findall(r'"([^"]+)"', grp))
     exact |= set(re.findall(r'path == "([^"]+)"', SERVER_SRC))
     prefixes = set(re.findall(r'url\.path\.startswith\("([^"]+)"\)', SERVER_SRC))
+    exact |= set(srv.PAGES)  # page shells are served from this table (task #388)
     return exact | {p + "x" for p in prefixes}
 
 
@@ -120,6 +121,7 @@ class ClassificationTest(_Base):
 class OpenSurfacesTest(_Base):
     def test_picture_frame_needs_no_pin(self):
         for path in ("/", "/wall", "/ambient", "/memories", "/gallery", "/api/progress",
+                     "/menu", "/start",
                      "/api/categories", "/api/gallery", "/login", "/static/pin.js"):
             status, *_ = self.req("GET", path)
             self.assertNotIn(status, (401, 403), path)
@@ -147,7 +149,8 @@ class PrivateSurfacesTest(_Base):
     # would let a route silently drop out of the test the moment someone
     # reclassifies it as OPEN (mutation-proven: /api/purge -> OPEN passed).
     PRIVATE_READS = ["/people", "/person", "/curation", "/api/people", "/api/person",
-                     "/api/curation", "/api/purged", "/api/vaulted", "/face/abc.jpg"]
+                     "/api/curation", "/api/purged", "/api/vaulted", "/face/abc.jpg",
+                     "/api/setup/where"]
     WRITES = ["/api/people/notthem", "/api/people/removeall", "/api/people/label",
               "/api/purge", "/api/photo/share", "/api/photo/vault",
               "/api/photo/markdelete", "/api/photo/remove", "/api/curation/restore"]
@@ -271,6 +274,136 @@ class StorageTest(_Base):
         self.assertTrue(auth.check_pin(PIN))
         self.assertFalse(auth.check_pin(PIN + "0"))
         self.assertFalse(auth.check_pin(""))
+
+
+class OnboardingTest(_Base):
+    """Nobody is stranded on a wall with no way out, and the
+    getting-started page can say where the photos live — exact folders only
+    after the family PIN."""
+
+    def test_where_needs_pin_and_answers_after_sign_in(self):
+        status, *_ = self.req("GET", "/api/setup/where",
+                              {**TLS, "Accept": "application/json"})
+        self.assertEqual(status, 401)
+        _, jar = self.login()
+        status, _, body, _ = self.req("GET", "/api/setup/where",
+                                      {"Cookie": self.cookie_header(jar), **TLS})
+        self.assertEqual(status, 200)
+        w = json.loads(body)
+        self.assertEqual(w["library"], str(config.LIBRARY_ROOT))
+        self.assertEqual(w["vault"], str(config.VAULT_MOUNT))
+        self.assertIsInstance(w["vault_open"], bool)
+
+    def test_open_start_page_never_embeds_a_path(self):
+        status, _, body, _ = self.req("GET", "/start")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Getting started", body)
+        self.assertNotIn(str(config.LIBRARY_ROOT).encode(), body)
+        self.assertNotIn(str(config.VAULT_MOUNT).encode(), body)
+
+    def test_wall_has_a_way_out_and_an_empty_state(self):
+        _, _, body, _ = self.req("GET", "/wall")
+        self.assertIn(b'href="/menu"', body)
+        self.assertIn(b'href="/start"', body)
+        self.assertIn(b'id="empty"', body)
+
+    def test_menu_links_getting_started(self):
+        _, _, body, _ = self.req("GET", "/menu")
+        self.assertIn(b'href="/start"', body)
+
+
+class SetupWhereVaultStateTest(_Base):
+    """GET /api/setup/where is observational (never creates the vault) and
+    reports dir vs encrypted state truthfully. Synthetic temp paths only;
+    LUKS cases are mocked — no real mount is touched."""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        self.mock = mock
+        self._saved_vault = (config.VAULT_MODE, config.VAULT_MOUNT)
+        config.VAULT_MOUNT = Path(tempfile.mkdtemp(prefix="mv-where-")) / "vault"
+        _, self.jar = self.login()
+
+    def tearDown(self):
+        config.VAULT_MODE, config.VAULT_MOUNT = self._saved_vault
+
+    def where(self):
+        status, _, body, _ = self.req("GET", "/api/setup/where",
+                                      {"Cookie": self.cookie_header(self.jar), **TLS})
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    def test_dir_mode_get_creates_nothing(self):
+        config.VAULT_MODE = "dir"
+        self.assertFalse(config.VAULT_MOUNT.exists())
+        w = self.where()
+        self.assertFalse(config.VAULT_MOUNT.exists(), "GET created the vault dir")
+        self.assertEqual(w["vault_state"], "dir-not-created")
+        self.assertEqual(w["vault_mode"], "dir")
+        self.assertFalse(w["vault_encrypted"])
+
+    def test_dir_mode_existing_folder_is_ready_not_encrypted(self):
+        config.VAULT_MODE = "dir"
+        config.VAULT_MOUNT.mkdir(parents=True)
+        before = sorted(config.VAULT_MOUNT.rglob("*"))
+        w = self.where()
+        self.assertEqual(sorted(config.VAULT_MOUNT.rglob("*")), before,
+                         "GET created vault subfolders")
+        self.assertEqual(w["vault_state"], "dir-ready")
+        self.assertTrue(w["vault_open"])
+        self.assertFalse(w["vault_encrypted"])
+
+    def test_luks_unmounted_is_locked(self):
+        config.VAULT_MODE = "luks"
+        with self.mock.patch("memoryvault.vault.os.path.ismount", return_value=False):
+            w = self.where()
+        self.assertEqual(w["vault_state"], "luks-locked")
+        self.assertFalse(w["vault_open"])
+        self.assertFalse(config.VAULT_MOUNT.exists())
+
+    def test_luks_mounted_dm_crypt_is_open_and_encrypted(self):
+        config.VAULT_MODE = "luks"
+        with self.mock.patch("memoryvault.vault.os.path.ismount", return_value=True), \
+             self.mock.patch("memoryvault.vault.backing_is_encrypted", return_value=True):
+            w = self.where()
+        self.assertEqual(w["vault_state"], "luks-open")
+        self.assertTrue(w["vault_open"])
+        self.assertTrue(w["vault_encrypted"])
+
+    def test_luks_plaintext_mount_is_not_reported_open(self):
+        config.VAULT_MODE = "luks"
+        with self.mock.patch("memoryvault.vault.os.path.ismount", return_value=True), \
+             self.mock.patch("memoryvault.vault.backing_is_encrypted", return_value=False):
+            w = self.where()
+        self.assertEqual(w["vault_state"], "luks-unencrypted")
+        self.assertFalse(w["vault_open"])
+        self.assertFalse(w["vault_encrypted"])
+
+    def test_start_page_has_no_locked_claim_for_dir_mode(self):
+        _, _, body, _ = self.req("GET", "/start")
+        self.assertNotIn(b"separate, locked folder", body)
+        self.assertIn(b'"dir-ready"', body)
+
+    def test_progress_viewable_excludes_vault_and_review(self):
+        status, _, body, _ = self.req("GET", "/api/progress",
+                                      {"Cookie": self.cookie_header(self.jar), **TLS})
+        self.assertEqual(status, 200)
+        p = json.loads(body)
+        self.assertIn("viewable", p)
+        self.assertLessEqual(p["viewable"], p["screen_done"] - p["vaulted"] - p["review"])
+
+
+class WayOutEverywhereTest(unittest.TestCase):
+    """Every page a person can land on has a way back to the menu."""
+
+    def test_every_static_page_links_the_menu(self):
+        static = Path(srv.__file__).parent / "static"
+        exempt = {"menu.html", "login.html"}   # the menu itself; pre-sign-in
+        missing = sorted(f.name for f in static.glob("*.html")
+                         if f.name not in exempt
+                         and 'href="/menu"' not in f.read_text(encoding="utf-8"))
+        self.assertEqual(missing, [], f"pages with no way back to /menu: {missing}")
 
 
 class ShareTest(_Base):
