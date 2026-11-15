@@ -113,6 +113,37 @@ def is_mounted() -> bool:
     return backing_is_encrypted(config.VAULT_MOUNT)
 
 
+def state() -> dict:
+    """Read-only description of the vault for status pages.
+
+    Unlike is_mounted(), this NEVER writes: is_mounted() in dir mode creates
+    the vault folders (it is called right before a move, where that is what
+    we want), but a status GET must not create anything on disk.
+
+    Returns {"mode", "available", "encrypted", "state"} where state is one of:
+      dir-ready        plain folder exists; always usable (host disk
+                       encryption is the household's responsibility)
+      dir-not-created  plain folder not made yet; created on first move
+      luks-open        an encrypted (dm-crypt) volume is mounted
+      luks-locked      nothing is mounted; an adult has to unlock it
+      luks-unencrypted something is mounted but it is NOT dm-crypt, so
+                       Constellation refuses to put photos there
+    """
+    mount = config.VAULT_MOUNT
+    if config.VAULT_MODE == "dir":
+        ready = mount.is_dir()
+        return {"mode": "dir", "available": ready, "encrypted": False,
+                "state": "dir-ready" if ready else "dir-not-created"}
+    if not os.path.ismount(mount):
+        return {"mode": "luks", "available": False, "encrypted": False,
+                "state": "luks-locked"}
+    if backing_is_encrypted(mount):
+        return {"mode": "luks", "available": True, "encrypted": True,
+                "state": "luks-open"}
+    return {"mode": "luks", "available": False, "encrypted": False,
+            "state": "luks-unencrypted"}
+
+
 def _unescape_mountinfo(field: str) -> str:
     # mountinfo octal-escapes space, tab, newline and backslash
     import re

@@ -311,6 +311,88 @@ class OnboardingTest(_Base):
         self.assertIn(b'href="/start"', body)
 
 
+class SetupWhereVaultStateTest(_Base):
+    """GET /api/setup/where is observational (never creates the vault) and
+    reports dir vs encrypted state truthfully. Synthetic temp paths only;
+    LUKS cases are mocked — no real mount is touched."""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        self.mock = mock
+        self._saved_vault = (config.VAULT_MODE, config.VAULT_MOUNT)
+        config.VAULT_MOUNT = Path(tempfile.mkdtemp(prefix="mv-where-")) / "vault"
+        _, self.jar = self.login()
+
+    def tearDown(self):
+        config.VAULT_MODE, config.VAULT_MOUNT = self._saved_vault
+
+    def where(self):
+        status, _, body, _ = self.req("GET", "/api/setup/where",
+                                      {"Cookie": self.cookie_header(self.jar), **TLS})
+        self.assertEqual(status, 200)
+        return json.loads(body)
+
+    def test_dir_mode_get_creates_nothing(self):
+        config.VAULT_MODE = "dir"
+        self.assertFalse(config.VAULT_MOUNT.exists())
+        w = self.where()
+        self.assertFalse(config.VAULT_MOUNT.exists(), "GET created the vault dir")
+        self.assertEqual(w["vault_state"], "dir-not-created")
+        self.assertEqual(w["vault_mode"], "dir")
+        self.assertFalse(w["vault_encrypted"])
+
+    def test_dir_mode_existing_folder_is_ready_not_encrypted(self):
+        config.VAULT_MODE = "dir"
+        config.VAULT_MOUNT.mkdir(parents=True)
+        before = sorted(config.VAULT_MOUNT.rglob("*"))
+        w = self.where()
+        self.assertEqual(sorted(config.VAULT_MOUNT.rglob("*")), before,
+                         "GET created vault subfolders")
+        self.assertEqual(w["vault_state"], "dir-ready")
+        self.assertTrue(w["vault_open"])
+        self.assertFalse(w["vault_encrypted"])
+
+    def test_luks_unmounted_is_locked(self):
+        config.VAULT_MODE = "luks"
+        with self.mock.patch("memoryvault.vault.os.path.ismount", return_value=False):
+            w = self.where()
+        self.assertEqual(w["vault_state"], "luks-locked")
+        self.assertFalse(w["vault_open"])
+        self.assertFalse(config.VAULT_MOUNT.exists())
+
+    def test_luks_mounted_dm_crypt_is_open_and_encrypted(self):
+        config.VAULT_MODE = "luks"
+        with self.mock.patch("memoryvault.vault.os.path.ismount", return_value=True), \
+             self.mock.patch("memoryvault.vault.backing_is_encrypted", return_value=True):
+            w = self.where()
+        self.assertEqual(w["vault_state"], "luks-open")
+        self.assertTrue(w["vault_open"])
+        self.assertTrue(w["vault_encrypted"])
+
+    def test_luks_plaintext_mount_is_not_reported_open(self):
+        config.VAULT_MODE = "luks"
+        with self.mock.patch("memoryvault.vault.os.path.ismount", return_value=True), \
+             self.mock.patch("memoryvault.vault.backing_is_encrypted", return_value=False):
+            w = self.where()
+        self.assertEqual(w["vault_state"], "luks-unencrypted")
+        self.assertFalse(w["vault_open"])
+        self.assertFalse(w["vault_encrypted"])
+
+    def test_start_page_has_no_locked_claim_for_dir_mode(self):
+        _, _, body, _ = self.req("GET", "/start")
+        self.assertNotIn(b"separate, locked folder", body)
+        self.assertIn(b'"dir-ready"', body)
+
+    def test_progress_viewable_excludes_vault_and_review(self):
+        status, _, body, _ = self.req("GET", "/api/progress",
+                                      {"Cookie": self.cookie_header(self.jar), **TLS})
+        self.assertEqual(status, 200)
+        p = json.loads(body)
+        self.assertIn("viewable", p)
+        self.assertLessEqual(p["viewable"], p["screen_done"] - p["vaulted"] - p["review"])
+
+
 class ShareTest(_Base):
     def test_share_off_by_default_even_signed_in(self):
         _, jar = self.login()

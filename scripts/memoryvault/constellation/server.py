@@ -297,6 +297,9 @@ class ConstellationDB:
             "discovered": discovered,
             "ingested": ingested,
             "screen_done": screened + vaulted + review,
+            # what can actually appear on a wall: screened, still in the
+            # library, not curated to Trash (vaulted/review never count)
+            "viewable": retag_total,
             "screen_total": ingested,
             "tag_done": tagged,
             "tag_total": max(0, ingested - trash),
@@ -637,17 +640,22 @@ class Handler(BaseHTTPRequestHandler):
             # "where do my photos live?" for the getting-started page. Paths
             # only (PIN-gated); answered before the DB opens so a fresh
             # install with no library yet still gets an answer.
+            # Observational only: vault.state() never creates folders
+            # (is_mounted() does in dir mode, so it must not be used here).
             from .. import vault as vaultmod
             try:
-                vault_open = bool(vaultmod.is_mounted())
+                vs = vaultmod.state()
             except Exception:  # noqa: BLE001 — a probe, never a crash
-                vault_open = False
+                vs = {"mode": config.VAULT_MODE, "available": False,
+                      "encrypted": False, "state": "unknown"}
             self._json({
                 "library": str(config.LIBRARY_ROOT),
                 "originals": str(config.LIBRARY_ROOT / "originals"),
                 "vault": str(config.VAULT_MOUNT),
-                "vault_mode": config.VAULT_MODE,
-                "vault_open": vault_open,
+                "vault_mode": vs["mode"],
+                "vault_open": bool(vs["available"]),
+                "vault_encrypted": bool(vs["encrypted"]),
+                "vault_state": vs["state"],
                 "vault_folders": list(config.VAULT_FOLDERS),
             })
             return

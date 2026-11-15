@@ -71,8 +71,8 @@
       phone you picked. Constellation reads them and keeps its own copy in a
       library folder on <b>this computer</b>; that copy is what the wall, the star
       map and the gallery show.</p>
-    <p>The <b>Personal Vault</b> is a separate, locked folder for pictures that
-      shouldn't hang on a shared wall. Pictures the safety check flags go there
+    <p>The <b>Personal Vault</b> is a separate folder, kept off every wall, for
+      pictures that shouldn't hang on a shared wall. Pictures the safety check flags go there
       for an adult to review, and you can move any picture there yourself with
       “Move to Personal Vault”.</p>
     <div class="where" id="where" aria-live="polite">
@@ -142,9 +142,22 @@ async function loadWhere() {
   box.append(row("Library (Constellation's copy):", w.library));
   box.append(row("Personal Vault:", w.vault));
   const st = document.createElement("div");
-  st.textContent = w.vault_open
-    ? "The vault is open right now."
-    : "The vault is locked right now — that's normal; it opens when an adult unlocks it.";
+  // Say what is actually true for this install: a plain-folder vault is
+  // never "locked", and only a dm-crypt volume is called encrypted.
+  const VAULT_SAYS = {
+    "dir-ready": "The vault is a regular folder on this computer and is always available. "
+      + "It is only as private as this computer's own disk encryption.",
+    "dir-not-created": "The vault is a regular folder on this computer; it will be created "
+      + "the first time a picture is moved there. It is only as private as this "
+      + "computer's own disk encryption.",
+    "luks-open": "The encrypted vault is unlocked right now.",
+    "luks-locked": "The encrypted vault is locked right now — that's normal; "
+      + "it opens when an adult unlocks it.",
+    "luks-unencrypted": "Something is attached at the vault folder but it isn't encrypted, "
+      + "so Constellation won't put pictures there. An adult should check the vault drive.",
+  };
+  st.textContent = VAULT_SAYS[w.vault_state]
+    || "Constellation couldn't check the vault right now.";
   box.append(st);
   $("whereActs").hidden = true;
   $("stepWhere").classList.add("done");
@@ -156,19 +169,24 @@ async function loadSweep() {
   const out = $("sweep"), bar = $("bar");
   if (!p) { out.textContent = "Couldn't reach the server — is Constellation running?"; return; }
   const total = Math.max(p.discovered || 0, p.ingested || 0);
-  const ready = p.screen_done || 0;
-  const pct = total ? Math.min(100, Math.round((ready / total) * 100)) : 0;
+  // screen_done counts every photo the safety check has finished, including
+  // ones it sent to the vault or to adult review. Only `viewable` (screened,
+  // in the library, not Trash) can show up on a wall, so "ready" uses that;
+  // the bar tracks checking progress.
+  const checked = p.screen_done || 0;
+  const ready = p.viewable ?? Math.max(0, checked - (p.vaulted || 0) - (p.review || 0));
+  const pct = total ? Math.min(100, Math.round((checked / total) * 100)) : 0;
   bar.firstElementChild.style.width = pct + "%";
   bar.setAttribute("aria-valuenow", String(pct));
   if (!total && !p.active_stage) {
     out.textContent = "No photos found yet. Open the Constellation Setup app on this "
       + "computer and choose where your photos are.";
-  } else if (ready && ready >= total && !p.active_stage) {
-    out.textContent = `All caught up — ${n(ready)} photos ready.`;
+  } else if (checked && checked >= total && !p.active_stage) {
+    out.textContent = `All caught up — ${n(checked)} photos checked, ${n(ready)} ready to view.`;
     $("stepSweep").classList.add("done");
   } else {
-    out.textContent = `Reading your photos… ${n(ready)} of ${n(total)} ready`
-      + (ready ? " — the first ones are ready to view." : ".");
+    out.textContent = `Reading your photos… ${n(checked)} of ${n(total)} checked`
+      + (ready ? ` — ${n(ready)} ready to view so far.` : ".");
   }
 }
 
