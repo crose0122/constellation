@@ -65,7 +65,17 @@ def _p(**kw):
     return base
 
 
-WAIT_PROMISE = "appear here as soon as"
+# Checking a photo never guarantees it reaches the wall (vault, review, Trash,
+# Removed/Delete tags and filtered walls all keep photos off it), so no branch
+# may promise that checked or newly added photos will appear, or when.
+UNCONDITIONAL_PROMISES = ("appear here as soon as", "they'll appear", "will appear",
+                          "will join", "within a minute", "once they're checked")
+
+
+def _no_promises(r):
+    low = r["msg"].lower()
+    for phrase in UNCONDITIONAL_PROMISES:
+        assert phrase not in low, f"unconditional promise {phrase!r} in {r['msg']!r}"
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -75,28 +85,34 @@ class TestEmptyWallCounts:
         assert "ready 8" not in r["live"] and "ready to view 8" not in r["live"]
         assert "checked 8" in r["live"]
         assert "ready to view 0" in r["live"]
-        assert WAIT_PROMISE not in r["msg"]
+        _no_promises(r)
         assert "finished checking" in r["msg"]
         assert "Personal Vault" in r["msg"]
+        assert "ready to view" in r["msg"]
 
     def test_review_and_vault_with_zero_viewable_is_not_ready(self):
         (r,) = _replay([_p(discovered=5, ingested=5, screen_done=5, vaulted=2, review=3)])
         assert "ready to view 0" in r["live"]
         assert "checked 5" in r["live"]
-        assert WAIT_PROMISE not in r["msg"]
+        _no_promises(r)
         assert "finished checking" in r["msg"]
-        assert "review" in r["msg"]
+        assert "were sent for adult review" in r["msg"]
+        assert "are waiting" not in r["msg"]
 
     def test_viewable_photos_are_counted_as_ready(self):
         (r,) = _replay([_p(discovered=8, ingested=8, screen_done=8, vaulted=2, viewable=6)])
         assert "ready to view 6" in r["live"]
         assert "checked 8" in r["live"]
         assert "finished checking" not in r["msg"]
+        _no_promises(r)
+        assert "6 photos are ready to view" in r["msg"]
 
-    def test_still_sweeping_keeps_the_wait_message_and_uses_viewable(self):
+    def test_still_sweeping_qualifies_the_wait_message_and_uses_viewable(self):
         (r,) = _replay([_p(discovered=1840, ingested=240, screen_done=240, vaulted=240,
                            active_stage="screen")])
-        assert WAIT_PROMISE in r["msg"]
+        _no_promises(r)
+        assert "reading your newest photos" in r["msg"]
+        assert "ready to view" in r["msg"]
         assert "ready to view 0" in r["live"]
         assert "checked 240" in r["live"]
 
@@ -105,7 +121,15 @@ class TestEmptyWallCounts:
         del p["viewable"]
         (r,) = _replay([p])
         assert "ready to view 0" in r["live"]
-        assert WAIT_PROMISE not in r["msg"]
+        _no_promises(r)
+
+    def test_old_server_fallback_also_subtracts_trash(self):
+        p = _p(discovered=8, ingested=8, screen_done=8, trash=8)
+        del p["viewable"]
+        (r,) = _replay([p])
+        assert "ready to view 0" in r["live"]
+        assert "finished checking" in r["msg"]
+        _no_promises(r)
 
     def test_unconfigured_and_unreachable_copy_is_unchanged(self):
         fresh, = _replay([_p()])

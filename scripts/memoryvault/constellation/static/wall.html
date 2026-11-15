@@ -630,25 +630,27 @@ async function updateEmpty() {
     // screen_done counts every photo the safety check finished, including the
     // ones it sent to the Personal Vault or to adult review. Only `viewable`
     // can reach a wall — same split as /start — so "ready" must use that, and
-    // a finished sweep with nothing viewable must say so instead of asking the
-    // family to wait for pictures that will never come.
+    // no branch may promise that checked (or newly added) photos will appear:
+    // vault, review, Trash and filtered walls all keep checked photos off it.
     const total = Math.max(p.discovered || 0, p.ingested || 0);
     const checked = p.screen_done || 0;
     const held = (p.vaulted || 0) + (p.review || 0);
-    const ready = p.viewable ?? Math.max(0, checked - held);
+    // older servers lack `viewable`; subtract everything that can't be shown
+    const ready = p.viewable ?? Math.max(0, checked - held - (p.trash || 0));
     const finished = checked && checked >= total && !p.active_stage;
     if (finished && !ready) {
       msg.textContent = "Constellation finished checking your photos, but none of them "
-        + "can be shown on the wall. "
-        + (held ? `${n(p.vaulted)} went to the Personal Vault and ${n(p.review)} are `
-          + "waiting for an adult to review — photos in either place don't show here. " : "")
-        + "Add more photos and they'll appear once they're checked.";
+        + "are ready to view on the wall. "
+        + (held ? `${n(p.vaulted)} went to the Personal Vault and ${n(p.review)} `
+          + "were sent for adult review — photos in the vault or under review don't show here. " : "")
+        + "If you add more photos, only the ones that are ready to view after checking can show up here.";
     } else if (finished) {
-      msg.textContent = "Your photos are checked — the first ones will join the wall "
-        + "within a minute.";
+      msg.textContent = `${n(ready)} photos are ready to view. The wall looks for them `
+        + "every minute; if this wall is filtered, only matching photos show up here.";
     } else {
       msg.textContent = "The first sweep is reading your newest photos. "
-        + "Pictures appear here as soon as they're checked — no need to stay.";
+        + "Only photos that are ready to view can show up here, and they can "
+        + "arrive while it works — no need to stay.";
     }
     live.textContent = `Found ${n(p.discovered)} · checked ${n(checked)} · ready to view ${n(ready)}`;
   }
